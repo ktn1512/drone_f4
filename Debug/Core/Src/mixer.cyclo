@@ -1,0 +1,2 @@
+../Core/Src/mixer.c:24:17:LimitMotor	4
+../Core/Src/mixer.c:41:6:Mixer_QuadX	2
