@@ -21,7 +21,7 @@ void AngleController_Init(AngleController_t *angle)
 			 10.0f, 200.0f);
 
 	PID_Init(&angle->pitch,
-			 8f, 0.1f, 0.01f,
+			 8f, 0.1f, 0.01f, 
 			 10.0f, 200.0f);
 }	
 
