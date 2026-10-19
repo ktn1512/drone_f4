@@ -318,3 +318,46 @@ HAL_StatusTypeDef MMC5983_ReadMag(MMC5983MA_t *dev,
 
     return HAL_OK;
 }
+
+/* Các lời gọi bên dưới không chờ cờ đo. I2C vẫn đồng bộ; timeout ngắn để
+ * hạn chế treo vòng điều khiển nếu bus lỗi. */
+#define MMC5983_FAST_I2C_TIMEOUT_MS 3U
+
+HAL_StatusTypeDef MMC5983_StartMeasurement(MMC5983MA_t *dev)
+{
+    if ((dev == NULL) || (dev->hi2c == NULL)) return HAL_ERROR;
+    uint8_t cmd = CTRL0_TM_M;
+    return HAL_I2C_Mem_Write(dev->hi2c, MMC5983_I2C_ADDR, REG_CONTROL0,
+                             I2C_MEMADD_SIZE_8BIT, &cmd, 1U,
+                             MMC5983_FAST_I2C_TIMEOUT_MS);
+}
+
+HAL_StatusTypeDef MMC5983_ReadMagIfReady(MMC5983MA_t *dev,
+                                         float *x, float *y, float *z)
+{
+    if ((dev == NULL) || (dev->hi2c == NULL) ||
+        (x == NULL) || (y == NULL) || (z == NULL)) return HAL_ERROR;
+
+    uint8_t status = 0U;
+    HAL_StatusTypeDef r = HAL_I2C_Mem_Read(dev->hi2c, MMC5983_I2C_ADDR,
+                              REG_STATUS, I2C_MEMADD_SIZE_8BIT,
+                              &status, 1U, MMC5983_FAST_I2C_TIMEOUT_MS);
+    if (r != HAL_OK) return r;
+    if ((status & STATUS_MEAS_M_DONE) == 0U) return HAL_BUSY;
+
+    uint8_t buf[7] = {0};
+    r = HAL_I2C_Mem_Read(dev->hi2c, MMC5983_I2C_ADDR, REG_XOUT0,
+                         I2C_MEMADD_SIZE_8BIT, buf, sizeof(buf),
+                         MMC5983_FAST_I2C_TIMEOUT_MS);
+    if (r != HAL_OK) return r;
+    dev->raw_x = (int32_t)(((uint32_t)buf[0] << 10) | ((uint32_t)buf[1] << 2) |
+                           ((buf[6] >> 6) & 0x03U));
+    dev->raw_y = (int32_t)(((uint32_t)buf[2] << 10) | ((uint32_t)buf[3] << 2) |
+                           ((buf[6] >> 4) & 0x03U));
+    dev->raw_z = (int32_t)(((uint32_t)buf[4] << 10) | ((uint32_t)buf[5] << 2) |
+                           ((buf[6] >> 2) & 0x03U));
+    dev->mag_x = *x = ((float)dev->raw_x - 131072.0f) / 16384.0f;
+    dev->mag_y = *y = ((float)dev->raw_y - 131072.0f) / 16384.0f;
+    dev->mag_z = *z = ((float)dev->raw_z - 131072.0f) / 16384.0f;
+    return HAL_OK;
+}

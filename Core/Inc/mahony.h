@@ -39,7 +39,8 @@ typedef struct {
 	 */
 	float twoKp;
 	/**
-	 * @brief Hai lần hệ số phản hồi tích phân; tích lũy sai số theo dt.
+	 * @brief Hai lần hệ số học bù bias; mặc định 0 trong cấu hình chẩn đoán rung.
+	 * @note Giá trị không dương xóa phản hồi tích phân ở lần cập nhật hợp lệ kế tiếp.
 	 */
 	float twoKi;
 
@@ -56,10 +57,15 @@ typedef struct {
 	 */
 	float integralFBz;
 
+	/** @brief Norm accel trước chuẩn hóa, g; 0 nếu mẫu không hữu hạn/quá nhỏ. */
+	float accel_norm_g;
+	/** @brief Trọng số accel lần cập nhật gần nhất, 0..1; 0 là bỏ phản hồi accel. */
+	float accel_weight;
+
 } Mahony_t;
 
 /**
- * @brief Đặt quaternion đơn vị, hệ số phản hồi mặc định và xóa tích phân.
+ * @brief Đặt quaternion đơn vị, Kp mặc định, tắt học bias và xóa tích phân.
  * @param[out] mahony Trạng thái bộ lọc cần khởi tạo; con trỏ phải hợp lệ.
  */
 void Mahony_Init(Mahony_t *mahony);
@@ -88,12 +94,16 @@ int Mahony_InitFromAccel(Mahony_t *mahony, float ax, float ay, float az);
  * @param[in] gx Vận tốc góc trục X, độ/giây; hàm đổi sang rad/giây nội bộ.
  * @param[in] gy Vận tốc góc trục Y, độ/giây; hàm đổi sang rad/giây nội bộ.
  * @param[in] gz Vận tốc góc trục Z, độ/giây; hàm đổi sang rad/giây nội bộ.
- * @param[in] ax Gia tốc trục X, g; vector được chuẩn hóa khi khác vector 0.
+ * @param[in] ax Gia tốc trục X, g; đánh giá độ tin cậy trước khi chuẩn hóa.
  * @param[in] ay Gia tốc trục Y, g.
  * @param[in] az Gia tốc trục Z, g.
  * @param[in] dt Khoảng thời gian tích phân của lần cập nhật, đơn vị giây.
- * @note Vector accel bằng 0 bỏ qua phản hồi accel; vẫn tích phân gyro và chuẩn hóa quaternion.
- * @note Người gọi cung cấp con trỏ và số liệu hữu hạn hợp lệ; hàm không kiểm tra dt.
+ * @note Accel đầy đủ trọng số khi norm lệch 1 g không quá 0.1 g, giảm tuyến tính
+ *       tới 0 tại độ lệch 0.2 g. Đây là ngưỡng chẩn đoán, chưa xác nhận trên khung.
+ * @note Accel không hữu hạn/quá nhỏ hoặc trọng số 0 chỉ bỏ phản hồi accel;
+ *       vẫn tích phân gyro và dùng bias đã học nếu Ki dương. Học bias giới hạn 5 độ/giây.
+ * @note dt không hữu hạn/không dương hoặc gyro không hữu hạn giữ nguyên trạng thái.
+ * @note Không loại được accel sai hướng có norm gần 1 g. Con trỏ phải hợp lệ.
  */
 void Mahony_Update(Mahony_t *mahony,
 

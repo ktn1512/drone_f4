@@ -1,6 +1,6 @@
 /**
  * @file angle_controller.h
- * @brief Giao diện vòng điều khiển góc roll/pitch tạo tốc độ góc đặt.
+ * @brief Giao diện PID góc roll/pitch/yaw tạo tốc độ góc đặt.
  */
 /*
  * angle_controller.h
@@ -15,7 +15,7 @@
 #include "pid.h"
 
 /**
- * @brief Trạng thái hai vòng PID góc roll/pitch sinh tốc độ góc đặt.
+ * @brief Trạng thái ba vòng PID góc roll/pitch/yaw sinh tốc độ góc đặt.
  */
 typedef struct {
 	/**
@@ -26,13 +26,17 @@ typedef struct {
 	 * @brief PID góc pitch: đầu vào độ, đầu ra tốc độ góc đặt độ/s.
 	 */
 	PID_t pitch;
+	/** @brief PID góc yaw: sai số góc ngắn nhất (độ), đầu ra tốc độ yaw đặt (độ/s). */
+	PID_t yaw;
 
 } AngleController_t;
 
 /**
- * @brief Khởi tạo hai PID góc với hệ số hiện có trong implementation.
+ * @brief Khởi tạo ba PID góc, bao gồm yaw giữ hướng dựa trên MMC.
  * @param[out] angle Bộ điều khiển góc được khởi tạo; con trỏ phải hợp lệ.
- * @note Giới hạn I là 10 độ/s, giới hạn đầu ra là 200 độ/s; không kiểm tra NULL.
+ * @note Mặc định Ki/Kd bằng 0, chỉ P sinh tốc độ đặt. Giới hạn I dự phòng
+ *       là 10 độ/s cho roll/pitch, giới hạn tốc độ yaw 80 độ/s.
+ *       Không kiểm tra NULL.
  */
 void AngleController_Init(AngleController_t *angle);
 
@@ -58,5 +62,15 @@ float roll_deg, float pitch_deg,
 float dt,
 
 float *roll_rate_sp, float *pitch_rate_sp);
+
+/**
+ * @brief PID giữ hướng yaw với sai số góc ngắn nhất trong [-180, 180] độ.
+ * @param yaw_setpoint_deg Hướng đặt theo MMC, độ; được phép 0..360.
+ * @param yaw_deg Hướng đo đã hợp nhất gyro + MMC, độ; được phép 0..360.
+ * @return Tốc độ yaw đặt (độ/s) cho RateController_Update.
+ * @note Kd yaw mặc định = 0. Dùng góc vòng tròn, không PID trực tiếp trên số 359/0.
+ */
+float AngleController_UpdateYaw(AngleController_t *angle,
+                               float yaw_setpoint_deg, float yaw_deg, float dt);
 
 #endif /* INC_ANGLE_CONTROLLER_H_ */

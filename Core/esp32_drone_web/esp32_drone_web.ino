@@ -56,10 +56,10 @@ struct PidGains {
 };
 /** @brief Gain hiển thị trên dashboard; cập nhật từ R hoặc sau A xác nhận ghi PID. */
 PidGains pids[5] = {
-  { 10.0f, 0.0f, 0.0f },  // Angle Roll
-  { 10.0f, 0.0f, 0.0f },  // Angle Pitch
-  { 0.5f, 1.4f, 0.0f },   // Rate Roll
-  { 0.5f, 1.4f, 0.0f },   // Rate Pitch
+  { 7.2f, 0.0f, 0.0f },   // Angle Roll
+  { 8.0f, 0.0f, 0.0f },   // Angle Pitch
+  { 0.8f, 0.2f, 0.0f },   // Rate Roll
+  { 0.8f, 0.2f, 0.0f },   // Rate Pitch
   { 0.3f, 0.0f, 0.0f }    // Rate Yaw
 };
 

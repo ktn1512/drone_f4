@@ -153,4 +153,15 @@ HAL_StatusTypeDef MMC5983_ReadMag(
 	float *y,
 	float *z);
 
+/** @brief Kích hoạt phép đo một lần, KHÔNG chờ; dùng ngoài vòng PID nhanh. */
+HAL_StatusTypeDef MMC5983_StartMeasurement(MMC5983MA_t *dev);
+/**
+ * @brief Kiểm tra cờ hoàn tất và đọc một mẫu mà không HAL_Delay.
+ * @retval HAL_OK Mẫu đã cập nhật.
+ * @retval HAL_BUSY Mẫu chưa sẵn sàng, thử lại vào vòng lặp sau.
+ * @retval HAL_ERROR hoặc HAL_TIMEOUT Lỗi I2C.
+ */
+HAL_StatusTypeDef MMC5983_ReadMagIfReady(MMC5983MA_t *dev,
+                                         float *x, float *y, float *z);
+
 #endif

@@ -12,18 +12,20 @@
 #include "rate_controller.h"
 
 /**
- * @brief Khởi tạo PID tốc độ roll/pitch/yaw với các hệ số hiện tại.
+ * @brief Khởi tạo PI tốc độ roll/pitch và P yaw cho cấu hình kiểm tra ban đầu.
+ * @note D mặc định bằng 0 để bỏ đường khuếch đại gia tốc/nhiễu gyro;
+ *       đây là cấu hình cần kiểm tra trên giá, chưa phải gain đã xác nhận bay.
  */
 void RateController_Init(RateController_t *rate)
 {
 	// Gia tri khoi dau de kiem tra tren gia test
 	PID_Init(&rate->roll,
-			 0.8f, 0.2f, 0.01f,
+			 0.8f, 0.2f, 0.0f,
 			 10.0f, 180.0f);
 
 	PID_Init(&rate->pitch,
-			 0.8f, 0.2f, 0.01f,
-			 10.0f, 180.0f);
+			 0.45f, 0.05f, 0.005f,
+			 10.0f, 150.0f);
 
 	PID_Init(&rate->yaw,
 			 0.3f, 0.0f, 0.0f,

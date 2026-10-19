@@ -4,3 +4,5 @@
 ../Core/Src/mmc5983ma.c:159:19:MMC5983_Init	8
 ../Core/Src/mmc5983ma.c:203:19:MMC5983_ReadRaw	12
 ../Core/Src/mmc5983ma.c:283:19:MMC5983_ReadMag	6
+../Core/Src/mmc5983ma.c:326:19:MMC5983_StartMeasurement	3
+../Core/Src/mmc5983ma.c:335:19:MMC5983_ReadMagIfReady	9

@@ -13,6 +13,18 @@
 #include "mahony.h"
 #include <math.h>
 
+/* Ngưỡng chẩn đoán ban đầu, cần đối chiếu log rung trên khung thực tế.
+ * Norm gần 1 g không bảo đảm hướng accel đúng khi có gia tốc/rung lệch DC. */
+#define MAHONY_ACCEL_FULL_ERROR_G   0.10f
+#define MAHONY_ACCEL_REJECT_ERROR_G 0.20f
+#define MAHONY_INTEGRAL_LIMIT_RAD_S 0.08726646f /* 5 độ/giây */
+
+/** @brief Giới hạn phần học bù bias nếu chủ động bật lại tích phân Mahony. */
+static float clampIntegral(float value) {
+	return fmaxf(-MAHONY_INTEGRAL_LIMIT_RAD_S,
+	             fminf(MAHONY_INTEGRAL_LIMIT_RAD_S, value));
+}
+
 /**
  * @brief Tính nghịch đảo căn bậc hai của một số.
  * @param[in] x Giá trị cần tính căn; phải dương để nhận kết quả hữu hạn.
@@ -32,12 +44,16 @@ void Mahony_Init(Mahony_t *m) {
 	m->q2 = 0.0f;
 	m->q3 = 0.0f;
 
-	m->twoKp = 4.0f;
-	m->twoKi = 0.05f;
+	m->twoKp = 2.0f;
+	/* Tạm tắt học bias từ accel trong lần chẩn đoán rung motor.
+	 * Gyro vẫn dùng bias đo lúc khởi động; đây không phải Ki của PID motor. */
+	m->twoKi = 0.0f;
 
 	m->integralFBx = 0;
 	m->integralFBy = 0;
 	m->integralFBz = 0;
+	m->accel_norm_g = 0.0f;
+	m->accel_weight = 0.0f;
 }
 
 /**
@@ -84,6 +100,7 @@ int Mahony_InitFromAccel(Mahony_t *m, float ax, float ay, float az) {
 	m->q1 = sr * cp;
 	m->q2 = cr * sp;
 	m->q3 = -sr * sp;
+	m->accel_norm_g = sqrtf(normSq);
 	return 1;
 }
 
@@ -98,6 +115,20 @@ float gx, float gy, float gz,
 float ax, float ay, float az,
 
 float dt) {
+	/* Không để một mẫu lỗi phá hỏng quaternion của các lần cập nhật sau. */
+	if (!isfinite(dt) || dt <= 0.0f ||
+	    !isfinite(gx) || !isfinite(gy) || !isfinite(gz)) {
+		return;
+	}
+
+	/* Ki = 0 phải bỏ cả phần tích phân đã học, kể cả khi accel không hợp lệ. */
+	if (!(m->twoKi > 0.0f)) {
+		m->integralFBx = 0.0f;
+		m->integralFBy = 0.0f;
+		m->integralFBz = 0.0f;
+	}
+	m->accel_norm_g = 0.0f;
+	m->accel_weight = 0.0f;
 	/**
 	 * @brief Nghịch đảo độ lớn vector dùng chuẩn hóa accel rồi quaternion.
 	 */
@@ -147,8 +178,21 @@ float dt) {
 	gy *= 0.0174533f;
 	gz *= 0.0174533f;
 
-	if ((ax != 0.0f) || (ay != 0.0f) || (az != 0.0f)) {
-		recipNorm = invSqrt(ax * ax + ay * ay + az * az);
+	/* Đánh giá norm trước chuẩn hóa để giữ được dấu hiệu gia tốc bất thường.
+	 * Không chặn theo chênh lệch góc: vẫn phải hồi phục được khi góc đang sai. */
+	float accelNormSq = ax * ax + ay * ay + az * az;
+	if (isfinite(accelNormSq) && accelNormSq >= 1.0e-6f) {
+		m->accel_norm_g = sqrtf(accelNormSq);
+		float normError = fabsf(m->accel_norm_g - 1.0f);
+		if (normError <= MAHONY_ACCEL_FULL_ERROR_G) {
+			m->accel_weight = 1.0f;
+		} else if (normError < MAHONY_ACCEL_REJECT_ERROR_G) {
+			m->accel_weight = (MAHONY_ACCEL_REJECT_ERROR_G - normError) /
+			                  (MAHONY_ACCEL_REJECT_ERROR_G - MAHONY_ACCEL_FULL_ERROR_G);
+		}
+	}
+	if (m->accel_weight > 0.0f) {
+		recipNorm = 1.0f / m->accel_norm_g;
 
 		ax *= recipNorm;
 		ay *= recipNorm;
@@ -164,18 +208,23 @@ float dt) {
 		halfey = az * halfvx - ax * halfvz;
 		halfez = ax * halfvy - ay * halfvx;
 
-		m->integralFBx += m->twoKi * halfex * dt;
-		m->integralFBy += m->twoKi * halfey * dt;
-		m->integralFBz += m->twoKi * halfez * dt;
-
-		gx += m->integralFBx;
-		gy += m->integralFBy;
-		gz += m->integralFBz;
+		halfex *= m->accel_weight;
+		halfey *= m->accel_weight;
+		halfez *= m->accel_weight;
+		if (m->twoKi > 0.0f) {
+			m->integralFBx = clampIntegral(m->integralFBx + m->twoKi * halfex * dt);
+			m->integralFBy = clampIntegral(m->integralFBy + m->twoKi * halfey * dt);
+			m->integralFBz = clampIntegral(m->integralFBz + m->twoKi * halfez * dt);
+		}
 
 		gx += m->twoKp * halfex;
 		gy += m->twoKp * halfey;
 		gz += m->twoKp * halfez;
 	}
+	/* Khi tạm bỏ accel, giữ bù bias đã học; không học thêm từ mẫu bị loại. */
+	gx += m->integralFBx;
+	gy += m->integralFBy;
+	gz += m->integralFBz;
 
 	gx *= 0.5f * dt;
 	gy *= 0.5f * dt;

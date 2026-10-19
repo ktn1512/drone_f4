@@ -36,7 +36,7 @@ typedef struct {
 /**
  * @brief Khởi tạo ba PID tốc độ góc với hệ số hiện có trong implementation.
  * @param[out] rate Bộ điều khiển tốc độ được khởi tạo; con trỏ phải hợp lệ.
- * @note Roll/pitch giới hạn I ở 10 µs và đầu ra ở 180 µs;
+ * @note Roll/pitch mặc định dùng PI (Kd = 0), giới hạn I ở 10 µs và đầu ra ở 180 µs;
  *       yaw giới hạn I ở 0 µs và đầu ra ở 100 µs. Không kiểm tra NULL.
  */
 void RateController_Init(RateController_t *rate);
