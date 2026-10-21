@@ -4,12 +4,12 @@
 void AngleController_Init(AngleController_t *angle)
 {
 	PID_Init(&angle->roll,
-			 7.2f, 0.0f, 0.0f,
+			 7.2f, 0.2f, 0.0f,
 			 10.0f, 200.0f);
 
 	PID_Init(&angle->pitch,
-			 7.2f, 0.2f, 0.001f,
-			 10.0f, 200.0f);
+			 8.0f, 0.3f, 0.001f,
+			 10.5f, 200.0f);
 
 	PID_Init(&angle->yaw,
 			 4.0f, 0.0f, 0.0f,

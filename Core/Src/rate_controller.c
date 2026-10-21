@@ -8,7 +8,7 @@ void RateController_Init(RateController_t *rate)
 			 10.0f, 180.0f);
 
 	PID_Init(&rate->pitch,
-			 0.5f, 0.075f, 0.00f,
+			 0.55f, 0.25f, 0.00f,
 			 10.0f, 200.0f);
 
 	PID_Init(&rate->yaw,
