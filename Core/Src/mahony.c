@@ -1,43 +1,19 @@
-/**
- * @file mahony.c
- * @brief Ước lượng quaternion và góc Euler bằng phản hồi Mahony gyro/accel.
- */
-
-/*
- * mahony.c
- *
- *  Created on: 13 thg 9, 2026
- *      Author: khanh
- */
-
 #include "mahony.h"
 #include <math.h>
 
-/* Ngưỡng chẩn đoán ban đầu, cần đối chiếu log rung trên khung thực tế.
- * Norm gần 1 g không bảo đảm hướng accel đúng khi có gia tốc/rung lệch DC. */
 #define MAHONY_ACCEL_FULL_ERROR_G   0.10f
 #define MAHONY_ACCEL_REJECT_ERROR_G 0.20f
-#define MAHONY_INTEGRAL_LIMIT_RAD_S 0.08726646f /* 5 độ/giây */
+#define MAHONY_INTEGRAL_LIMIT_RAD_S 0.08726646f
 
-/** @brief Giới hạn phần học bù bias nếu chủ động bật lại tích phân Mahony. */
 static float clampIntegral(float value) {
 	return fmaxf(-MAHONY_INTEGRAL_LIMIT_RAD_S,
 	             fminf(MAHONY_INTEGRAL_LIMIT_RAD_S, value));
 }
 
-/**
- * @brief Tính nghịch đảo căn bậc hai của một số.
- * @param[in] x Giá trị cần tính căn; phải dương để nhận kết quả hữu hạn.
- * @return 1 / sqrtf(x); không có bước kiểm tra miền giá trị.
- */
 static float invSqrt(float x) {
 	return 1.0f / sqrtf(x);
 }
 
-/**
- * @brief Khởi tạo quaternion đơn vị, các hệ số và tích phân phản hồi.
- * @see Mahony_Init trong mahony.h để biết hợp đồng tham số.
- */
 void Mahony_Init(Mahony_t *m) {
 	m->q0 = 1.0f;
 	m->q1 = 0.0f;
@@ -45,8 +21,7 @@ void Mahony_Init(Mahony_t *m) {
 	m->q3 = 0.0f;
 
 	m->twoKp = 2.0f;
-	/* Tạm tắt học bias từ accel trong lần chẩn đoán rung motor.
-	 * Gyro vẫn dùng bias đo lúc khởi động; đây không phải Ki của PID motor. */
+
 	m->twoKi = 0.0f;
 
 	m->integralFBx = 0;
@@ -56,46 +31,27 @@ void Mahony_Init(Mahony_t *m) {
 	m->accel_weight = 0.0f;
 }
 
-/**
- * @brief Tạo quaternion từ roll/pitch của accel với yaw bằng 0.
- * @see Mahony_InitFromAccel trong mahony.h để biết hợp đồng tham số.
- */
 int Mahony_InitFromAccel(Mahony_t *m, float ax, float ay, float az) {
-	/**
-	 * @brief Bình phương độ lớn vector gia tốc, g², để loại mẫu nhỏ hoặc không hữu hạn.
-	 */
+
 	float normSq = ax * ax + ay * ay + az * az;
 	if (!isfinite(normSq) || normSq < 1.0e-6f) {
 		return 0;
 	}
 
-	/**
-	 * @brief Góc roll suy từ accel, radian.
-	 */
 	float roll = atan2f(ay, az);
-	/**
-	 * @brief Góc pitch suy từ accel, radian.
-	 */
+
 	float pitch = atan2f(-ax, sqrtf(ay * ay + az * az));
-	/**
-	 * @brief Cosine nửa góc roll, không đơn vị.
-	 */
+
 	float cr = cosf(0.5f * roll);
-	/**
-	 * @brief Sine nửa góc roll, không đơn vị.
-	 */
+
 	float sr = sinf(0.5f * roll);
-	/**
-	 * @brief Cosine nửa góc pitch, không đơn vị.
-	 */
+
 	float cp = cosf(0.5f * pitch);
-	/**
-	 * @brief Sine nửa góc pitch, không đơn vị.
-	 */
+
 	float sp = sinf(0.5f * pitch);
 
 	Mahony_Init(m);
-	/* Euler roll/pitch, yaw = 0, using the same convention as GetEuler. */
+
 	m->q0 = cr * cp;
 	m->q1 = sr * cp;
 	m->q2 = cr * sp;
@@ -104,10 +60,6 @@ int Mahony_InitFromAccel(Mahony_t *m, float ax, float ay, float az) {
 	return 1;
 }
 
-/**
- * @brief Đổi gyro từ độ/giây sang rad/giây rồi cập nhật quaternion.
- * @see Mahony_Update trong mahony.h để biết hợp đồng tham số.
- */
 void Mahony_Update(Mahony_t *m,
 
 float gx, float gy, float gz,
@@ -115,13 +67,12 @@ float gx, float gy, float gz,
 float ax, float ay, float az,
 
 float dt) {
-	/* Không để một mẫu lỗi phá hỏng quaternion của các lần cập nhật sau. */
+
 	if (!isfinite(dt) || dt <= 0.0f ||
 	    !isfinite(gx) || !isfinite(gy) || !isfinite(gz)) {
 		return;
 	}
 
-	/* Ki = 0 phải bỏ cả phần tích phân đã học, kể cả khi accel không hợp lệ. */
 	if (!(m->twoKi > 0.0f)) {
 		m->integralFBx = 0.0f;
 		m->integralFBy = 0.0f;
@@ -129,57 +80,31 @@ float dt) {
 	}
 	m->accel_norm_g = 0.0f;
 	m->accel_weight = 0.0f;
-	/**
-	 * @brief Nghịch đảo độ lớn vector dùng chuẩn hóa accel rồi quaternion.
-	 */
+
 	float recipNorm;
 
-	/**
-	 * @brief Nửa thành phần X của hướng trọng lực ước lượng từ quaternion, không đơn vị.
-	 */
 	float halfvx;
-	/**
-	 * @brief Nửa thành phần Y của hướng trọng lực ước lượng từ quaternion, không đơn vị.
-	 */
+
 	float halfvy;
-	/**
-	 * @brief Nửa thành phần Z của hướng trọng lực ước lượng từ quaternion, không đơn vị.
-	 */
+
 	float halfvz;
 
-	/**
-	 * @brief Thành phần X của tích có hướng giữa accel chuẩn hóa và nửa hướng trọng lực.
-	 */
 	float halfex;
-	/**
-	 * @brief Thành phần Y của tích có hướng giữa accel chuẩn hóa và nửa hướng trọng lực.
-	 */
+
 	float halfey;
-	/**
-	 * @brief Thành phần Z của tích có hướng giữa accel chuẩn hóa và nửa hướng trọng lực.
-	 */
+
 	float halfez;
 
-	/**
-	 * @brief Bản sao q0 trước bước tích phân để các phép tính dùng cùng trạng thái cũ.
-	 */
 	float qa;
-	/**
-	 * @brief Bản sao q1 trước bước tích phân, không đơn vị.
-	 */
+
 	float qb;
-	/**
-	 * @brief Bản sao q2 trước bước tích phân, không đơn vị.
-	 */
+
 	float qc;
 
-	/* Feedback is in radians/s: convert gyro before adding feedback. */
 	gx *= 0.0174533f;
 	gy *= 0.0174533f;
 	gz *= 0.0174533f;
 
-	/* Đánh giá norm trước chuẩn hóa để giữ được dấu hiệu gia tốc bất thường.
-	 * Không chặn theo chênh lệch góc: vẫn phải hồi phục được khi góc đang sai. */
 	float accelNormSq = ax * ax + ay * ay + az * az;
 	if (isfinite(accelNormSq) && accelNormSq >= 1.0e-6f) {
 		m->accel_norm_g = sqrtf(accelNormSq);
@@ -221,7 +146,7 @@ float dt) {
 		gy += m->twoKp * halfey;
 		gz += m->twoKp * halfez;
 	}
-	/* Khi tạm bỏ accel, giữ bù bias đã học; không học thêm từ mẫu bị loại. */
+
 	gx += m->integralFBx;
 	gy += m->integralFBy;
 	gz += m->integralFBz;
@@ -248,20 +173,12 @@ float dt) {
 	m->q3 *= recipNorm;
 }
 
-/**
- * @brief Xuất góc Euler theo độ từ quaternion hiện tại.
- * @see Mahony_GetEuler trong mahony.h để biết hợp đồng tham số.
- */
 void Mahony_GetEuler(Mahony_t *m,
 
 float *roll, float *pitch, float *yaw) {
 	*roll = atan2f(2.0f * (m->q0 * m->q1 + m->q2 * m->q3),
 			1.0f - 2.0f * (m->q1 * m->q1 + m->q2 * m->q2)) * 57.29578f;
 
-	/* Rounding can put sin(pitch) slightly outside [-1, 1] near 90 deg. */
-	/**
-	 * @brief Sine góc pitch, không đơn vị; được giới hạn về [-1, 1] trước asinf.
-	 */
 	float sinPitch = 2.0f * (m->q0 * m->q2 - m->q3 * m->q1);
 	sinPitch = fmaxf(-1.0f, fminf(1.0f, sinPitch));
 	*pitch = asinf(sinPitch) * 57.29578f;

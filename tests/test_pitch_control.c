@@ -1,8 +1,3 @@
-/*
- * Host regression tests for the angle -> rate -> motor command path.
- * These checks use the real controller defaults and implementation. They do
- * not simulate the airframe or establish the physical motor/IMU orientation.
- */
 #include <math.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -87,7 +82,6 @@ static void test_angle_has_no_residual_rate_request(void)
     float roll_sp, pitch_sp;
     AngleController_Init(&angle);
 
-    /* Five seconds of tilt followed by a different tilt primes both histories. */
     for (unsigned i = 0U; i < 2500U; ++i) {
         AngleController_Update(&angle, 0.0f, 0.0f, 6.0f, -8.0f,
                                dt_s, &roll_sp, &pitch_sp);
@@ -169,7 +163,6 @@ static void test_minimum_throttle_reset_removes_residuals(void)
     CHECK(rate.pitch.integral > 0.0f && rate.roll.integral < 0.0f,
           "reset test must first create residual rate I on both axes");
 
-    /* Same reset calls used by main.c when throttle is at minimum. */
     PID_Reset(&angle.roll);
     PID_Reset(&angle.pitch);
     PID_Reset(&rate.roll);
@@ -205,7 +198,7 @@ static void test_rate_p_still_opposes_motion_without_d_kicks(void)
         const float gyro = gyro_samples[i];
         RateController_Init(&a);
         RateController_Init(&b);
-        /* Different histories, then the same measured angular velocity. */
+
         RateController_Update(&a, 0.0f, 0.0f, 0.0f, 0.0f, -gyro, 0.0f,
                               dt_s, &roll_out, &a_pitch, &yaw_out);
         RateController_Update(&b, 0.0f, 0.0f, 0.0f, 0.0f, gyro, 0.0f,

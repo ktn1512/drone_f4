@@ -28,7 +28,6 @@ static void close_to(float actual, float expected, float tolerance)
     ++checks;
 }
 
-/* Stationary gravity in body axes, for yaw = 0 and +Z = +1 g at level. */
 static void gravity(float roll, float pitch, float *ax, float *ay, float *az)
 {
     const float r = roll * degrees_to_radians;
@@ -83,7 +82,6 @@ static void test_static_tilt(void)
         close_to(pitch, tilts[i][1], 2.0e-4f);
         close_to(yaw, 0.0f, 2.0e-4f);
 
-        /* Stationary updates preserve true tilt rather than setting it to zero. */
         for (int step = 0; step < 1000; ++step) {
             Mahony_Update(&m, 0.0f, 0.0f, 0.0f, ax, ay, az, 0.002f);
         }
@@ -92,7 +90,6 @@ static void test_static_tilt(void)
         close_to(pitch, tilts[i][1], 3.0e-4f);
         valid_orientation(&m);
 
-        /* A wrong level estimate must converge to measured physical tilt. */
         Mahony_Init(&m);
         for (int step = 0; step < 12500; ++step) {
             Mahony_Update(&m, 0.0f, 0.0f, 0.0f, ax, ay, az, 0.002f);
@@ -107,7 +104,7 @@ static void test_static_tilt(void)
 static void test_gyro_propagation(void)
 {
     static const float cases[][9] = {
-        /* gx, gy, gz, ax, ay, az, expected roll, pitch, yaw after 2 s. */
+
         { -15.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, -30.0f, 0.0f, 0.0f },
         { 0.0f, 30.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 60.0f, 0.0f },
         { 0.0f, 0.0f, 45.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 90.0f },
@@ -144,7 +141,7 @@ static void test_acceleration_confidence_and_recovery(void)
     for (size_t i = 0; i < sizeof norms / sizeof norms[0]; ++i) {
         Mahony_t m;
         Mahony_Init(&m);
-        /* Explicit local gain makes transient expectations independent of tuning. */
+
         m.twoKp = 2.0f;
         Mahony_Update(&m, 0.0f, 0.0f, 0.0f,
                       ax * norms[i], ay * norms[i], az * norms[i], 0.01f);
@@ -168,11 +165,11 @@ static void test_acceleration_confidence_and_recovery(void)
     CHECK(Mahony_InitFromAccel(&m, ax, ay, az) == 1);
     m.twoKp = 2.0f;
     for (int step = 0; step < 2500; ++step) {
-        /* Wrong-direction 2 g samples must not pull a held frame toward level. */
+
         Mahony_Update(&m, 0.0f, 0.0f, 0.0f, -1.0f, 0.0f, 1.7320508f, 0.002f);
     }
     close_to(pitch_of(&m), -11.0f, 0.001f);
-    /* A short partially trusted disturbance may move the estimate. */
+
     for (int step = 0; step < 250; ++step) {
         Mahony_Update(&m, 0.0f, 0.0f, 0.0f, -0.575f, 0.0f, 0.9959292f, 0.002f);
     }
@@ -214,7 +211,7 @@ static void test_disabled_integral(void)
 
 static void test_enabled_integral(void)
 {
-    /* Brief large errors exercise both signs and all three bounded learners. */
+
     for (int axis = 0; axis < 3; ++axis) {
         for (int sign = -1; sign <= 1; sign += 2) {
             Mahony_t m;
@@ -249,7 +246,6 @@ static void test_enabled_integral(void)
     Mahony_Update(&partial, 0.0f, 0.0f, 0.0f, -0.575f, 0.0f, 0.9959292f, 0.01f);
     close_to(partial.integralFBy / full.integralFBy, 0.5f, 2.0e-5f);
 
-    /* Once learned, bias continues correcting gyro through missing/rejected accel. */
     Mahony_t m;
     Mahony_Init(&m);
     m.twoKp = 0.0f;
@@ -299,7 +295,7 @@ static void test_invalid_input(void)
                                   invalid_acceleration[i][1], invalid_acceleration[i][2]) == 0);
         same_orientation(&m, &previous);
     }
-    /* A valid update after rejected input still propagates a real rotation. */
+
     const float start_pitch = pitch_of(&m);
     Mahony_Update(&m, 0.0f, 10.0f, 0.0f, NAN, 0.0f, 1.0f, 0.01f);
     CHECK(pitch_of(&m) > start_pitch + 0.09f);

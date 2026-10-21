@@ -1,31 +1,3 @@
-/**************************************************************************//**
- * @file     cmsis_iccarm.h
- * @brief    CMSIS compiler ICCARM (IAR Compiler for Arm) header file
- * @version  V5.3.0
- * @date     14. April 2021
- ******************************************************************************/
-
-//------------------------------------------------------------------------------
-//
-// Copyright (c) 2017-2021 IAR Systems
-// Copyright (c) 2017-2021 Arm Limited. All rights reserved.
-//
-// SPDX-License-Identifier: Apache-2.0
-//
-// Licensed under the Apache License, Version 2.0 (the "License")
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-//------------------------------------------------------------------------------
-
-
 #ifndef __CMSIS_ICCARM_H__
 #define __CMSIS_ICCARM_H__
 
@@ -47,7 +19,7 @@
   #if __ICCARM_V8
     #define __ALIGNED(x) __attribute__((aligned(x)))
   #elif (__VER__ >= 7080000)
-    /* Needs IAR language extensions */
+
     #define __ALIGNED(x) __attribute__((aligned(x)))
   #else
     #warning No compiler specific solution for __ALIGNED.__ALIGNED is ignored.
@@ -55,11 +27,8 @@
   #endif
 #endif
 
-
-/* Define compiler macros for CPU architecture, used in CMSIS 5.
- */
 #if __ARM_ARCH_6M__ || __ARM_ARCH_7M__ || __ARM_ARCH_7EM__ || __ARM_ARCH_8M_BASE__ || __ARM_ARCH_8M_MAIN__
-/* Macros already defined */
+
 #else
   #if defined(__ARM8M_MAINLINE__) || defined(__ARM8EM_MAINLINE__)
     #define __ARM_ARCH_8M_MAIN__ 1
@@ -74,11 +43,10 @@
       #else
         #define __ARM_ARCH_7M__ 1
       #endif
-    #endif /* __ARM_ARCH */
-  #endif /* __ARM_ARCH_PROFILE == 'M' */
+    #endif
+  #endif
 #endif
 
-/* Alternativ core deduction for older ICCARM's */
 #if !defined(__ARM_ARCH_6M__) && !defined(__ARM_ARCH_7M__) && !defined(__ARM_ARCH_7EM__) && \
     !defined(__ARM_ARCH_8M_BASE__) && !defined(__ARM_ARCH_8M_MAIN__)
   #if defined(__ARM6M__) && (__CORE__ == __ARM6M__)
@@ -98,8 +66,6 @@
   #endif
 #endif
 
-
-
 #if defined(__ARM_ARCH_6M__) && __ARM_ARCH_6M__==1
   #define __IAR_M0_FAMILY  1
 #elif defined(__ARM_ARCH_8M_BASE__) && __ARM_ARCH_8M_BASE__==1
@@ -107,7 +73,6 @@
 #else
   #define __IAR_M0_FAMILY  0
 #endif
-
 
 #ifndef __ASM
   #define __ASM __asm
@@ -133,7 +98,7 @@
   #if __ICCARM_V8
     #define __PACKED __attribute__((packed, aligned(1)))
   #else
-    /* Needs IAR language extensions */
+
     #define __PACKED __packed
   #endif
 #endif
@@ -142,7 +107,7 @@
   #if __ICCARM_V8
     #define __PACKED_STRUCT struct __attribute__((packed, aligned(1)))
   #else
-    /* Needs IAR language extensions */
+
     #define __PACKED_STRUCT __packed struct
   #endif
 #endif
@@ -151,7 +116,7 @@
   #if __ICCARM_V8
     #define __PACKED_UNION union __attribute__((packed, aligned(1)))
   #else
-    /* Needs IAR language extensions */
+
     #define __PACKED_UNION __packed union
   #endif
 #endif
@@ -160,7 +125,7 @@
   #if __ICCARM_V8
     #define __RESTRICT            __restrict
   #else
-    /* Needs IAR language extensions */
+
     #define __RESTRICT            restrict
   #endif
 #endif
@@ -187,7 +152,6 @@ __IAR_FT uint16_t __iar_uint16_read(void const *ptr)
 #pragma language=restore
 #define __UNALIGNED_UINT16_READ(PTR) __iar_uint16_read(PTR)
 #endif
-
 
 #ifndef __UNALIGNED_UINT16_WRITE
 #pragma language=save
@@ -222,7 +186,7 @@ __IAR_FT void __iar_uint32_write(void const *ptr, uint32_t val)
 #define __UNALIGNED_UINT32_WRITE(PTR,VAL) __iar_uint32_write(PTR,VAL)
 #endif
 
-#ifndef __UNALIGNED_UINT32   /* deprecated */
+#ifndef __UNALIGNED_UINT32
 #pragma language=save
 #pragma language=extended
 __packed struct  __iar_u32 { uint32_t v; };
@@ -238,7 +202,7 @@ __packed struct  __iar_u32 { uint32_t v; };
   #endif
 #endif
 
-#undef __WEAK                           /* undo the definition from DLib_Defaults.h */
+#undef __WEAK
 #ifndef   __WEAK
   #if __ICCARM_V8
     #define __WEAK __attribute__((weak))
@@ -316,7 +280,6 @@ __STATIC_FORCEINLINE void __TZ_set_STACKSEAL_S (uint32_t* stackTop) {
   #define __arm_rsr           __iar_builtin_rsr
   #define __arm_wsr           __iar_builtin_wsr
 
-
   #define __get_APSR()                (__arm_rsr("APSR"))
   #define __get_BASEPRI()             (__arm_rsr("BASEPRI"))
   #define __get_CONTROL()             (__arm_rsr("CONTROL"))
@@ -335,7 +298,7 @@ __STATIC_FORCEINLINE void __TZ_set_STACKSEAL_S (uint32_t* stackTop) {
   #define __get_MSP()                 (__arm_rsr("MSP"))
   #if (!(defined (__ARM_ARCH_8M_MAIN__ ) && (__ARM_ARCH_8M_MAIN__ == 1)) && \
        (!defined (__ARM_FEATURE_CMSE) || (__ARM_FEATURE_CMSE < 3)))
-    // without main extensions, the non-secure MSPLIM is RAZ/WI
+
     #define __get_MSPLIM()            (0U)
   #else
     #define __get_MSPLIM()            (__arm_rsr("MSPLIM"))
@@ -345,7 +308,7 @@ __STATIC_FORCEINLINE void __TZ_set_STACKSEAL_S (uint32_t* stackTop) {
 
   #if (!(defined (__ARM_ARCH_8M_MAIN__ ) && (__ARM_ARCH_8M_MAIN__ == 1)) && \
        (!defined (__ARM_FEATURE_CMSE) || (__ARM_FEATURE_CMSE < 3)))
-    // without main extensions, the non-secure PSPLIM is RAZ/WI
+
     #define __get_PSPLIM()            (0U)
   #else
     #define __get_PSPLIM()            (__arm_rsr("PSPLIM"))
@@ -367,7 +330,7 @@ __STATIC_FORCEINLINE void __set_CONTROL(uint32_t control)
 
   #if (!(defined (__ARM_ARCH_8M_MAIN__ ) && (__ARM_ARCH_8M_MAIN__ == 1)) && \
        (!defined (__ARM_FEATURE_CMSE) || (__ARM_FEATURE_CMSE < 3)))
-    // without main extensions, the non-secure MSPLIM is RAZ/WI
+
     #define __set_MSPLIM(VALUE)       ((void)(VALUE))
   #else
     #define __set_MSPLIM(VALUE)       (__arm_wsr("MSPLIM", (VALUE)))
@@ -376,7 +339,7 @@ __STATIC_FORCEINLINE void __set_CONTROL(uint32_t control)
   #define __set_PSP(VALUE)            (__arm_wsr("PSP", (VALUE)))
   #if (!(defined (__ARM_ARCH_8M_MAIN__ ) && (__ARM_ARCH_8M_MAIN__ == 1)) && \
        (!defined (__ARM_FEATURE_CMSE) || (__ARM_FEATURE_CMSE < 3)))
-    // without main extensions, the non-secure PSPLIM is RAZ/WI
+
     #define __set_PSPLIM(VALUE)       ((void)(VALUE))
   #else
     #define __set_PSPLIM(VALUE)       (__arm_wsr("PSPLIM", (VALUE)))
@@ -405,7 +368,7 @@ __STATIC_FORCEINLINE void __TZ_set_CONTROL_NS(uint32_t control)
 
   #if (!(defined (__ARM_ARCH_8M_MAIN__ ) && (__ARM_ARCH_8M_MAIN__ == 1)) && \
        (!defined (__ARM_FEATURE_CMSE) || (__ARM_FEATURE_CMSE < 3)))
-    // without main extensions, the non-secure PSPLIM is RAZ/WI
+
     #define __TZ_get_PSPLIM_NS()      (0U)
     #define __TZ_set_PSPLIM_NS(VALUE) ((void)(VALUE))
   #else
@@ -523,17 +486,16 @@ __STATIC_FORCEINLINE void __TZ_set_CONTROL_NS(uint32_t control)
     #define __PKHTB   __iar_builtin_PKHTB
   #endif
 
-#else /* __ICCARM_INTRINSICS_VERSION__ == 2 */
+#else
 
   #if __IAR_M0_FAMILY
-   /* Avoid clash between intrinsics.h and arm_math.h when compiling for Cortex-M0. */
+
     #define __CLZ  __cmsis_iar_clz_not_active
     #define __SSAT __cmsis_iar_ssat_not_active
     #define __USAT __cmsis_iar_usat_not_active
     #define __RBIT __cmsis_iar_rbit_not_active
     #define __get_APSR  __cmsis_iar_get_APSR_not_active
   #endif
-
 
   #if (!((defined (__FPU_PRESENT) && (__FPU_PRESENT == 1U)) && \
          (defined (__FPU_USED   ) && (__FPU_USED    == 1U))     ))
@@ -548,7 +510,7 @@ __STATIC_FORCEINLINE void __TZ_set_CONTROL_NS(uint32_t control)
   #include <intrinsics.h>
 
   #if __IAR_M0_FAMILY
-   /* Avoid clash between intrinsics.h and arm_math.h when compiling for Cortex-M0. */
+
     #undef __CLZ
     #undef __SSAT
     #undef __USAT
@@ -622,8 +584,6 @@ __STATIC_FORCEINLINE void __TZ_set_CONTROL_NS(uint32_t control)
     }
   #endif
 
-
-  /* __CORTEX_M is defined in core_cm0.h, core_cm3.h and core_cm4.h. */
   #if (__CORTEX_M >= 0x03)
 
     __IAR_FT uint32_t __RRX(uint32_t value)
@@ -638,12 +598,10 @@ __STATIC_FORCEINLINE void __TZ_set_CONTROL_NS(uint32_t control)
       __asm volatile("MSR      BASEPRI_MAX,%0"::"r" (value));
     }
 
-
     #define __enable_fault_irq  __enable_fiq
     #define __disable_fault_irq __disable_fiq
 
-
-  #endif /* (__CORTEX_M >= 0x03) */
+  #endif
 
   __IAR_FT uint32_t __ROR(uint32_t op1, uint32_t op2)
   {
@@ -658,7 +616,7 @@ __STATIC_FORCEINLINE void __TZ_set_CONTROL_NS(uint32_t control)
       uint32_t res;
     #if (!(defined (__ARM_ARCH_8M_MAIN__ ) && (__ARM_ARCH_8M_MAIN__ == 1)) && \
          (!defined (__ARM_FEATURE_CMSE  ) || (__ARM_FEATURE_CMSE   < 3)))
-      // without main extensions, the non-secure MSPLIM is RAZ/WI
+
       res = 0U;
     #else
       __asm volatile("MRS      %0,MSPLIM" : "=r" (res));
@@ -670,7 +628,7 @@ __STATIC_FORCEINLINE void __TZ_set_CONTROL_NS(uint32_t control)
     {
     #if (!(defined (__ARM_ARCH_8M_MAIN__ ) && (__ARM_ARCH_8M_MAIN__ == 1)) && \
          (!defined (__ARM_FEATURE_CMSE  ) || (__ARM_FEATURE_CMSE   < 3)))
-      // without main extensions, the non-secure MSPLIM is RAZ/WI
+
       (void)value;
     #else
       __asm volatile("MSR      MSPLIM,%0" :: "r" (value));
@@ -682,7 +640,7 @@ __STATIC_FORCEINLINE void __TZ_set_CONTROL_NS(uint32_t control)
       uint32_t res;
     #if (!(defined (__ARM_ARCH_8M_MAIN__ ) && (__ARM_ARCH_8M_MAIN__ == 1)) && \
          (!defined (__ARM_FEATURE_CMSE  ) || (__ARM_FEATURE_CMSE   < 3)))
-      // without main extensions, the non-secure PSPLIM is RAZ/WI
+
       res = 0U;
     #else
       __asm volatile("MRS      %0,PSPLIM" : "=r" (res));
@@ -694,7 +652,7 @@ __STATIC_FORCEINLINE void __TZ_set_CONTROL_NS(uint32_t control)
     {
     #if (!(defined (__ARM_ARCH_8M_MAIN__ ) && (__ARM_ARCH_8M_MAIN__ == 1)) && \
          (!defined (__ARM_FEATURE_CMSE  ) || (__ARM_FEATURE_CMSE   < 3)))
-      // without main extensions, the non-secure PSPLIM is RAZ/WI
+
       (void)value;
     #else
       __asm volatile("MSR      PSPLIM,%0" :: "r" (value));
@@ -790,7 +748,7 @@ __STATIC_FORCEINLINE void __TZ_set_CONTROL_NS(uint32_t control)
       uint32_t res;
     #if (!(defined (__ARM_ARCH_8M_MAIN__ ) && (__ARM_ARCH_8M_MAIN__ == 1)) && \
          (!defined (__ARM_FEATURE_CMSE  ) || (__ARM_FEATURE_CMSE   < 3)))
-      // without main extensions, the non-secure PSPLIM is RAZ/WI
+
       res = 0U;
     #else
       __asm volatile("MRS      %0,PSPLIM_NS" : "=r" (res));
@@ -802,7 +760,7 @@ __STATIC_FORCEINLINE void __TZ_set_CONTROL_NS(uint32_t control)
     {
     #if (!(defined (__ARM_ARCH_8M_MAIN__ ) && (__ARM_ARCH_8M_MAIN__ == 1)) && \
          (!defined (__ARM_FEATURE_CMSE  ) || (__ARM_FEATURE_CMSE   < 3)))
-      // without main extensions, the non-secure PSPLIM is RAZ/WI
+
       (void)value;
     #else
       __asm volatile("MSR      PSPLIM_NS,%0" :: "r" (value));
@@ -821,9 +779,9 @@ __STATIC_FORCEINLINE void __TZ_set_CONTROL_NS(uint32_t control)
       __asm volatile("MSR      MSPLIM_NS,%0" :: "r" (value));
     }
 
-  #endif /* __ARM_ARCH_8M_MAIN__ or __ARM_ARCH_8M_BASE__ */
+  #endif
 
-#endif   /* __ICCARM_INTRINSICS_VERSION__ == 2 */
+#endif
 
 #define __BKPT(value)    __asm volatile ("BKPT     %0" : : "i"(value))
 
@@ -864,7 +822,7 @@ __STATIC_FORCEINLINE void __TZ_set_CONTROL_NS(uint32_t control)
   }
 #endif
 
-#if (__CORTEX_M >= 0x03)   /* __CORTEX_M is defined in core_cm0.h, core_cm3.h and core_cm4.h. */
+#if (__CORTEX_M >= 0x03)
 
   __IAR_FT uint8_t __LDRBT(volatile uint8_t *addr)
   {
@@ -902,11 +860,10 @@ __STATIC_FORCEINLINE void __TZ_set_CONTROL_NS(uint32_t control)
     __ASM volatile ("STRT %1, [%0]" : : "r" (addr), "r" (value) : "memory");
   }
 
-#endif /* (__CORTEX_M >= 0x03) */
+#endif
 
 #if ((defined (__ARM_ARCH_8M_MAIN__ ) && (__ARM_ARCH_8M_MAIN__ == 1)) || \
      (defined (__ARM_ARCH_8M_BASE__ ) && (__ARM_ARCH_8M_BASE__ == 1))    )
-
 
   __IAR_FT uint8_t __LDAB(volatile uint8_t *ptr)
   {
@@ -986,7 +943,7 @@ __STATIC_FORCEINLINE void __TZ_set_CONTROL_NS(uint32_t control)
     return res;
   }
 
-#endif /* __ARM_ARCH_8M_MAIN__ or __ARM_ARCH_8M_BASE__ */
+#endif
 
 #undef __IAR_FT
 #undef __IAR_M0_FAMILY
@@ -999,4 +956,4 @@ __STATIC_FORCEINLINE void __TZ_set_CONTROL_NS(uint32_t control)
 
 #define __SXTAB16_RORn(ARG1, ARG2, ARG3) __SXTAB16(ARG1, __ROR(ARG2, ARG3))
 
-#endif /* __CMSIS_ICCARM_H__ */
+#endif

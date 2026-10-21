@@ -1,8 +1,8 @@
-../Core/Src/mmc5983ma.c:99:26:WriteReg	3
-../Core/Src/mmc5983ma.c:121:26:ReadReg	5
-../Core/Src/mmc5983ma.c:142:9:MMC5983_WhoAmI	2
-../Core/Src/mmc5983ma.c:159:19:MMC5983_Init	8
-../Core/Src/mmc5983ma.c:203:19:MMC5983_ReadRaw	12
-../Core/Src/mmc5983ma.c:283:19:MMC5983_ReadMag	6
-../Core/Src/mmc5983ma.c:326:19:MMC5983_StartMeasurement	3
-../Core/Src/mmc5983ma.c:335:19:MMC5983_ReadMagIfReady	9
+../Core/Src/mmc5983ma.c:41:26:WriteReg	3
+../Core/Src/mmc5983ma.c:55:26:ReadReg	5
+../Core/Src/mmc5983ma.c:72:9:MMC5983_WhoAmI	2
+../Core/Src/mmc5983ma.c:83:19:MMC5983_Init	8
+../Core/Src/mmc5983ma.c:120:19:MMC5983_ReadRaw	12
+../Core/Src/mmc5983ma.c:179:19:MMC5983_ReadMag	6
+../Core/Src/mmc5983ma.c:210:19:MMC5983_StartMeasurement	3
+../Core/Src/mmc5983ma.c:219:19:MMC5983_ReadMagIfReady	9

@@ -1,8 +1,8 @@
-../Core/Src/mmc5983ma.c:99:26:WriteReg	32	static
-../Core/Src/mmc5983ma.c:121:26:ReadReg	40	static
-../Core/Src/mmc5983ma.c:142:9:MMC5983_WhoAmI	24	static
-../Core/Src/mmc5983ma.c:159:19:MMC5983_Init	24	static
-../Core/Src/mmc5983ma.c:203:19:MMC5983_ReadRaw	48	static
-../Core/Src/mmc5983ma.c:283:19:MMC5983_ReadMag	40	static
-../Core/Src/mmc5983ma.c:326:19:MMC5983_StartMeasurement	40	static
-../Core/Src/mmc5983ma.c:335:19:MMC5983_ReadMagIfReady	56	static
+../Core/Src/mmc5983ma.c:41:26:WriteReg	32	static
+../Core/Src/mmc5983ma.c:55:26:ReadReg	40	static
+../Core/Src/mmc5983ma.c:72:9:MMC5983_WhoAmI	24	static
+../Core/Src/mmc5983ma.c:83:19:MMC5983_Init	24	static
+../Core/Src/mmc5983ma.c:120:19:MMC5983_ReadRaw	48	static
+../Core/Src/mmc5983ma.c:179:19:MMC5983_ReadMag	40	static
+../Core/Src/mmc5983ma.c:210:19:MMC5983_StartMeasurement	40	static
+../Core/Src/mmc5983ma.c:219:19:MMC5983_ReadMagIfReady	56	static

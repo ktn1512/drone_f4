@@ -1,40 +1,21 @@
-/**
- * @file rate_controller.c
- * @brief Cài đặt các vòng PID tốc độ góc tạo hiệu chỉnh động cơ.
- */
-/*
- * rate_controller.c
- *
- *  Created on: 6 thg 9, 2026
- *      Author: khanh
- */
-
 #include "rate_controller.h"
 
-/**
- * @brief Khởi tạo PI tốc độ roll/pitch và P yaw cho cấu hình kiểm tra ban đầu.
- * @note D mặc định bằng 0 để bỏ đường khuếch đại gia tốc/nhiễu gyro;
- *       đây là cấu hình cần kiểm tra trên giá, chưa phải gain đã xác nhận bay.
- */
 void RateController_Init(RateController_t *rate)
 {
-	// Gia tri khoi dau de kiem tra tren gia test
+
 	PID_Init(&rate->roll,
 			 0.8f, 0.2f, 0.0f,
 			 10.0f, 180.0f);
 
 	PID_Init(&rate->pitch,
-			 0.45f, 0.05f, 0.005f,
-			 10.0f, 150.0f);
+			 0.5f, 0.075f, 0.00f,
+			 10.0f, 200.0f);
 
 	PID_Init(&rate->yaw,
 			 0.3f, 0.0f, 0.0f,
 			 0.0f, 100.0f);
 }
 
-/**
- * @brief Cập nhật ba PID tốc độ góc và ghi hiệu chỉnh tương ứng cho mixer.
- */
 void RateController_Update(RateController_t *rate,
 
 						   float roll_rate_sp, float pitch_rate_sp, float yaw_rate_sp,

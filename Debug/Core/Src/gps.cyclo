@@ -1,6 +1,6 @@
-../Core/Src/gps.c:63:15:NMEA_To_Degree	1
-../Core/Src/gps.c:96:19:GPS_Init	1
-../Core/Src/gps.c:125:13:GPS_ParseRMC	11
-../Core/Src/gps.c:268:6:GPS_RxCallback	3
-../Core/Src/gps.c:307:6:GPS_Process	2
-../Core/Src/gps.c:334:13:GPS_GetData	1
+../Core/Src/gps.c:17:15:NMEA_To_Degree	1
+../Core/Src/gps.c:29:19:GPS_Init	1
+../Core/Src/gps.c:39:13:GPS_ParseRMC	11
+../Core/Src/gps.c:129:6:GPS_RxCallback	3
+../Core/Src/gps.c:152:6:GPS_Process	2
+../Core/Src/gps.c:166:13:GPS_GetData	1
