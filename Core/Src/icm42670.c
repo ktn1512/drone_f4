@@ -172,12 +172,12 @@ ICM42670_Status_t ICM42670_Init(ICM42670_t *dev)
         return status;
 
     /* Gyro UI LPF: 53 Hz. Reserved bits remain 0. */
-    status = ICM42670_WriteReg(ICM_GYRO_CONFIG1, 0x04U);
+    status = ICM42670_WriteReg(ICM_GYRO_CONFIG1, 0x06U);
     if (status != ICM42670_OK)
         return status;
 
     /* Accel UI LPF: 53 Hz, 2x averaging. Reserved bits remain 0. */
-    status = ICM42670_WriteReg(ICM_ACCEL_CONFIG1, 0x04U);
+    status = ICM42670_WriteReg(ICM_ACCEL_CONFIG1, 0x06U);
     if (status != ICM42670_OK)
         return status;
 
