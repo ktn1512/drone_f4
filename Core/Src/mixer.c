@@ -1,9 +1,10 @@
+/* Mixer Quad X: trộn throttle và Roll/Pitch/Yaw PID thành xung ESC µs. */
 #include "mixer.h"
 #include <math.h>
 
-#define MOTOR_MIN_US 1000.0f
+#define MOTOR_MIN_US 1000.0f // Giới hạn dưới xung ESC 1000 µs.
 
-#define MOTOR_MAX_US 1700.0f
+#define MOTOR_MAX_US 1700.0f // Giới hạn trên xung ESC 1700 µs.
 
 static uint16_t LimitMotor(float value)
 {

@@ -1,9 +1,10 @@
+/* Bộ lọc Mahony: quaternion hợp nhất gyro (độ/s) và accel (g). */
 #include "mahony.h"
 #include <math.h>
 
-#define MAHONY_ACCEL_FULL_ERROR_G   0.10f
-#define MAHONY_ACCEL_REJECT_ERROR_G 0.20f
-#define MAHONY_INTEGRAL_LIMIT_RAD_S 0.08726646f
+#define MAHONY_ACCEL_FULL_ERROR_G   0.10f // Ngưỡng 0,10g: tin accel hoàn toàn.
+#define MAHONY_ACCEL_REJECT_ERROR_G 0.20f // Ngưỡng 0,20g: loại bỏ accel.
+#define MAHONY_INTEGRAL_LIMIT_RAD_S 0.08726646f // Giới hạn tích phân 0,0873 rad/s = 5 độ/s.
 
 static float clampIntegral(float value) {
 	return fmaxf(-MAHONY_INTEGRAL_LIMIT_RAD_S,
@@ -14,6 +15,7 @@ static float invSqrt(float x) {
 	return 1.0f / sqrtf(x);
 }
 
+/* Khởi tạo quaternion đơn vị, twoKp=2, twoKi=0. */
 void Mahony_Init(Mahony_t *m) {
 	m->q0 = 1.0f;
 	m->q1 = 0.0f;
@@ -31,6 +33,7 @@ void Mahony_Init(Mahony_t *m) {
 	m->accel_weight = 0.0f;
 }
 
+/* Khởi tạo góc Roll/Pitch từ accel, trả 1 nếu hợp lệ. */
 int Mahony_InitFromAccel(Mahony_t *m, float ax, float ay, float az) {
 
 	float normSq = ax * ax + ay * ay + az * az;

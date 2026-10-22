@@ -1,3 +1,4 @@
+/* GPS: parse $GNRMC, tọa độ thập phân, tốc độ km/h, m/s và course. */
 #ifndef GPS_H
 #define GPS_H
 

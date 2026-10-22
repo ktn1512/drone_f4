@@ -1,3 +1,4 @@
+/* E22 driver cũ: nhận từng byte UART interrupt, truyền blocking timeout 100ms. */
 #include "e22.h"
 #include <string.h>
 
@@ -18,6 +19,7 @@ HAL_StatusTypeDef E22_SendString(E22_t *e22, const char *str) {
 	return E22_Send(e22, (uint8_t*) str, strlen(str));
 }
 
+/* Đẩy byte vào FIFO nếu không đầy, bật ngắt RX byte kế. */
 void E22_RxCallback(E22_t *e22) {
 	uint16_t next = (e22->rx_head + 1) % E22_RX_BUFFER_SIZE;
 

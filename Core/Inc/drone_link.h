@@ -1,3 +1,4 @@
+/* Liên kết LoRa: payload ASCII + *checksum XOR, gói T/P/G/S. */
 #ifndef DRONE_LINK_H
 #define DRONE_LINK_H
 
@@ -7,11 +8,11 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define DRONE_LINK_MIN_THR 1000U
+#define DRONE_LINK_MIN_THR 1000U // 1000 µs là throttle nhỏ nhất.
 
-#define DRONE_LINK_MAX_THR 1700U
+#define DRONE_LINK_MAX_THR 1700U // 1700 µs là throttle tối đa.
 
-#define DRONE_LINK_TIMEOUT_MS 4500U
+#define DRONE_LINK_TIMEOUT_MS 4500U // 4500 ms mất gói T thì throttle trở về 1000 µs.
 
 typedef struct {
     E220_t *radio;

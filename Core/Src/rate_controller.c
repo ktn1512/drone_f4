@@ -1,3 +1,4 @@
+/* PID vòng rate: gyro (độ/s) => hiệu chỉnh mixer. */
 #include "rate_controller.h"
 
 void RateController_Init(RateController_t *rate)

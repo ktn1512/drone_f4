@@ -1,3 +1,4 @@
+/* E220: UART 8N1 RX interrupt từng byte và TX DMA, có FIFO vòng. */
 #ifndef E220_H
 #define E220_H
 
@@ -8,9 +9,9 @@
 extern "C" {
 #endif
 
-#define E220_RX_BUFFER_SIZE       256U
+#define E220_RX_BUFFER_SIZE       256U // RX FIFO 256 byte.
 
-#define E220_MAX_PACKET_SIZE      256U
+#define E220_MAX_PACKET_SIZE      256U // TX DMA tối đa 256 byte.
 
 typedef struct {
     UART_HandleTypeDef *huart;

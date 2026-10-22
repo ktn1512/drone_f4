@@ -1,3 +1,4 @@
+/* PID vòng góc: độ => rate setpoint (độ/s). */
 #include "angle_controller.h"
 #include <math.h>
 

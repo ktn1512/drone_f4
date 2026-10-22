@@ -1,3 +1,4 @@
+/* GPS: parse $GNRMC, tọa độ thập phân, tốc độ km/h, m/s và course. */
 #include "gps.h"
 
 #include <string.h>
@@ -14,6 +15,7 @@ static uint16_t line_index = 0;
 
 static GPS_Data_t gps_data;
 
+/* Chuyển NMEA ddmm.mmmm thành độ thập phân: degrees + minutes/60. */
 static double NMEA_To_Degree(const char *str)
 {
 
@@ -36,6 +38,7 @@ HAL_StatusTypeDef GPS_Init(UART_HandleTypeDef *huart)
     return HAL_OK;
 }
 
+/* RMC: trường 2 fix, 3-6 tọa độ, 7 knot, 8 course. */
 static void GPS_ParseRMC(char *sentence)
 {
 
@@ -90,7 +93,7 @@ static void GPS_ParseRMC(char *sentence)
         case 7:
 
             gps_data.speed_kmh =
-                atof(token) * 1.852f;
+                atof(token) * 1.852f /* 1 knot = 1,852 km/h */;
 
             gps_data.speed_ms =
                 gps_data.speed_kmh / 3.6f;

@@ -1,3 +1,4 @@
+/* E22 driver cũ: nhận từng byte UART interrupt, truyền blocking timeout 100ms. */
 #ifndef __E22_H
 #define __E22_H
 

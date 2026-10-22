@@ -1,3 +1,4 @@
+/* PID vòng góc: độ => rate setpoint (độ/s). */
 #ifndef INC_ANGLE_CONTROLLER_H_
 #define INC_ANGLE_CONTROLLER_H_
 

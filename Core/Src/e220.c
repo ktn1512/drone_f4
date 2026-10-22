@@ -1,3 +1,4 @@
+/* E220: UART 8N1 RX interrupt từng byte và TX DMA, có FIFO vòng. */
 #include "e220.h"
 #include <stddef.h>
 #include <string.h>
@@ -7,6 +8,7 @@ static int valid_handle(const E220_t *e) {
            e->huart->Init.BaudRate > 0U;
 }
 
+/* Bật RX ngắt 1 byte; yêu cầu UART 8N1 và DMA TX. */
 HAL_StatusTypeDef E220_Init(E220_t *e, UART_HandleTypeDef *uart) {
     if (e == NULL || uart == NULL || uart->Instance == NULL ||
         uart->hdmatx == NULL ||
@@ -22,6 +24,7 @@ HAL_StatusTypeDef E220_Init(E220_t *e, UART_HandleTypeDef *uart) {
     return e->rx_status;
 }
 
+/* Copy dữ liệu sang buffer rồi phát DMA. */
 HAL_StatusTypeDef E220_Send_DMA(E220_t *e, const uint8_t *data, uint16_t len) {
     if (!valid_handle(e) || e->huart->hdmatx == NULL || len == 0U ||
         len > E220_MAX_PACKET_SIZE || data == NULL) return HAL_ERROR;
@@ -56,6 +59,7 @@ HAL_StatusTypeDef E220_Send(E220_t *e, const uint8_t *data, uint16_t n) {
     return E220_Send_DMA(e, data, n);
 }
 
+/* Tên IT nhưng thực tế gọi TX DMA. */
 HAL_StatusTypeDef E220_Send_IT(E220_t *e, const uint8_t *data, uint16_t n) {
     return E220_Send_DMA(e, data, n);
 }
@@ -64,12 +68,14 @@ HAL_StatusTypeDef E220_SendString(E220_t *e, const char *s) {
     return E220_SendString_DMA(e, s);
 }
 
+/* Kết thúc truyền DMA, xóa cờ bận. */
 void E220_TxCpltCallback(E220_t *e) {
     if (!valid_handle(e)) return;
     e->tx_active = 0U;
     ++e->tx_done_count;
 }
 
+/* Đưa byte vào FIFO vòng và kích RX IT tiếp. */
 void E220_RxCallback(E220_t *e) {
     if (!valid_handle(e)) return;
     ++e->rx_total_count;
@@ -84,6 +90,7 @@ void E220_RxCallback(E220_t *e) {
     e->rx_status = HAL_UART_Receive_IT(e->huart, &e->rx_byte, 1U);
 }
 
+/* Tăng bộ đếm lỗi, abort và restart RX. */
 void E220_ErrorCallback(E220_t *e) {
     if (!valid_handle(e)) return;
     ++e->uart_error_count;

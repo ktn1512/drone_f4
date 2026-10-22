@@ -1,3 +1,4 @@
+/* PID rời rạc: P theo error, D trên feedback có lọc, I chống windup. */
 #ifndef INC_PID_H_
 #define INC_PID_H_
 

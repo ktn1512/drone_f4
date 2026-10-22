@@ -1,3 +1,4 @@
+/* PID vòng rate: gyro (độ/s) => hiệu chỉnh mixer. */
 #ifndef INC_RATE_CONTROLLER_H_
 #define INC_RATE_CONTROLLER_H_
 

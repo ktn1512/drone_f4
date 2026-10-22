@@ -1,3 +1,4 @@
+/* Mixer Quad X: trộn throttle và Roll/Pitch/Yaw PID thành xung ESC µs. */
 #ifndef INC_MIXER_H_
 #define INC_MIXER_H_
 

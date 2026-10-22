@@ -1,3 +1,4 @@
+/* DShot300: đóng gói 16 bit PWM DMA; lưu ý TIM5 đang chạy PWM ESC 200 Hz. */
 #ifndef DSHOT_H
 #define DSHOT_H
 

@@ -1,3 +1,4 @@
+/* Bộ lọc Mahony: quaternion hợp nhất gyro (độ/s) và accel (g). */
 #ifndef INC_MAHONY_H_
 #define INC_MAHONY_H_
 

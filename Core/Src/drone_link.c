@@ -1,3 +1,4 @@
+/* Liên kết LoRa: payload ASCII + *checksum XOR, gói T/P/G/S. */
 #include "drone_link.h"
 #include <math.h>
 #include <stdio.h>
@@ -142,12 +143,14 @@ void DroneLink_Init(DroneLink_t *l, E220_t *radio,
 
 void DroneLink_SetMinimumThrottle(DroneLink_t *l) { l->throttle_us = DRONE_LINK_MIN_THR; }
 
+/* Trả throttle đã nhận hoặc 1000 khi timeout. */
 uint16_t DroneLink_Throttle(const DroneLink_t *l) {
     if ((uint32_t)(HAL_GetTick() - l->last_throttle_ms) > DRONE_LINK_TIMEOUT_MS)
         return DRONE_LINK_MIN_THR;
     return l->throttle_us;
 }
 
+/* Đọc từng byte, kiểm tra XOR và xử lý lệnh T/P/G. */
 void DroneLink_Poll(DroneLink_t *l) {
     if ((uint32_t)(HAL_GetTick() - l->last_throttle_ms) > DRONE_LINK_TIMEOUT_MS &&
         l->throttle_us != DRONE_LINK_MIN_THR) {

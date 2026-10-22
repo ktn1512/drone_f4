@@ -1,12 +1,13 @@
+/* DShot300: đóng gói 16 bit PWM DMA; lưu ý TIM5 đang chạy PWM ESC 200 Hz. */
 #include "dshot.h"
 
 extern TIM_HandleTypeDef htim5;
 
 #define DSHOT300_TIMER_TICKS     480U
 
-#define DSHOT_BIT_0              180U
+#define DSHOT_BIT_0              180U // Duty 180/480=37,5% cho bit 0.
 
-#define DSHOT_BIT_1              360U
+#define DSHOT_BIT_1              360U // Duty 360/480=75% cho bit 1.
 
 #define DSHOT_FRAME_WORDS        16U
 
@@ -26,6 +27,7 @@ static volatile uint8_t dshot_dma_busy = 0U;
 
 static volatile uint8_t dshot_dma_done_mask = 0U;
 
+/* Đóng gói throttle 11 bit + telemetry=0 + CRC4. */
 static uint16_t DSHOT_MakePacket(uint16_t throttle)
 {
 
@@ -65,6 +67,7 @@ static void DSHOT_FillBuffer(uint16_t packet, uint16_t *buffer)
     buffer[17] = 0U;
 }
 
+/* Ánh xạ 1000..2000 µs thành giá trị DShot 48..2047. */
 static uint16_t PWM_To_DShot(uint16_t pwm)
 {
     if (pwm < 1000U)
