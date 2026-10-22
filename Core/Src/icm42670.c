@@ -1,21 +1,26 @@
+/* Cài đặt ICM42670: bit7 địa chỉ SPI = 1 khi đọc, = 0 khi ghi. */
 #include "icm42670.h"
 #include <string.h>
 
+/* Chọn chip: CS=0. */
 static void CS_Low(void)
 {
     HAL_GPIO_WritePin(ICM_CS_PORT, ICM_CS_PIN, GPIO_PIN_RESET);
 }
 
+/* Bỏ chọn chip: CS=1. */
 static void CS_High(void)
 {
     HAL_GPIO_WritePin(ICM_CS_PORT, ICM_CS_PIN, GPIO_PIN_SET);
 }
 
+/* Đọc byte thanh ghi, trả mã trạng thái. */
 ICM42670_Status_t ICM42670_ReadReg(uint8_t reg, uint8_t *data)
 {
     if (data == NULL)
         return ICM42670_ERROR;
 
+/* Bit7=1 báo đọc thanh ghi SPI. */
     uint8_t addr = reg | 0x80U;
 
     HAL_StatusTypeDef status;
@@ -34,9 +39,11 @@ ICM42670_Status_t ICM42670_ReadReg(uint8_t reg, uint8_t *data)
     return ICM42670_OK;
 }
 
+/* Ghi byte dữ liệu vào thanh ghi. */
 ICM42670_Status_t ICM42670_WriteReg(uint8_t reg, uint8_t data)
 {
 
+/* Bit7=0 báo ghi thanh ghi SPI. */
     uint8_t buf[2] = { (uint8_t)(reg & 0x7FU), data };
 
     HAL_StatusTypeDef status;
@@ -53,11 +60,13 @@ ICM42670_Status_t ICM42670_WriteReg(uint8_t reg, uint8_t data)
     return ICM42670_OK;
 }
 
+/* Đọc len byte liên tiếp, giữ CS ở mức thấp. */
 static ICM42670_Status_t ICM42670_ReadBytes(uint8_t reg, uint8_t *data, uint16_t len)
 {
     if ((data == NULL) || (len == 0U))
         return ICM42670_ERROR;
 
+/* Bit7=1 báo đọc thanh ghi SPI. */
     uint8_t addr = reg | 0x80U;
 
     HAL_StatusTypeDef status;
@@ -76,11 +85,13 @@ static ICM42670_Status_t ICM42670_ReadBytes(uint8_t reg, uint8_t *data, uint16_t
     return ICM42670_OK;
 }
 
+/* Ghép 2 byte MSB/LSB thành int16. */
 static int16_t MakeInt16(uint8_t msb, uint8_t lsb)
 {
     return (int16_t)(((uint16_t)msb << 8) | lsb);
 }
 
+/* Khởi tạo thang đo, ODR, DLPF và Low Noise. */
 ICM42670_Status_t ICM42670_Init(ICM42670_t *dev)
 {
     if (dev == NULL)
@@ -99,22 +110,27 @@ ICM42670_Status_t ICM42670_Init(ICM42670_t *dev)
     if (who_am_i != ICM_WHO_AM_I_VALUE)
         return ICM42670_WHOAMI_ERROR;
 
+/* 0x05: FS[6:5]=00 (±2000 dps); ODR[3:0]=0101 (1600 Hz). */
     status = ICM42670_WriteReg(ICM_GYRO_CONFIG0, 0x05U);
     if (status != ICM42670_OK)
         return status;
 
+/* 0x25: FS[6:5]=01 (±8g); ODR[3:0]=0101 (1600 Hz). */
     status = ICM42670_WriteReg(ICM_ACCEL_CONFIG0, 0x25U);
     if (status != ICM42670_OK)
         return status;
 
+/* 0x06: GYRO_UI_FILT_BW[2:0]=110 => DLPF 25 Hz. */
     status = ICM42670_WriteReg(ICM_GYRO_CONFIG1, 0x06U);
     if (status != ICM42670_OK)
         return status;
 
+/* 0x06: ACCEL_UI_FILT_BW[2:0]=110 => DLPF 25 Hz; LP averaging[6:4]=000 (2x). */
     status = ICM42670_WriteReg(ICM_ACCEL_CONFIG1, 0x06U);
     if (status != ICM42670_OK)
         return status;
 
+/* 0x0F: GYRO_MODE[3:2]=11 và ACCEL_MODE[1:0]=11: cả hai Low Noise. */
     status = ICM42670_WriteReg(ICM_PWR_MGMT0, 0x0FU);
     if (status != ICM42670_OK)
         return status;
@@ -125,6 +141,7 @@ ICM42670_Status_t ICM42670_Init(ICM42670_t *dev)
     return ICM42670_OK;
 }
 
+/* Đọc raw 14 byte bắt đầu TEMP_DATA1 (0x09). */
 ICM42670_Status_t ICM42670_ReadRaw(ICM42670_Data_t *imu)
 {
     if (imu == NULL)
@@ -147,6 +164,7 @@ ICM42670_Status_t ICM42670_ReadRaw(ICM42670_Data_t *imu)
     return ICM42670_OK;
 }
 
+/* Raw/4096 => g; raw/16,4 => độ/s; chuyển nhiệt độ. */
 ICM42670_Status_t ICM42670_ReadAll(ICM42670_Data_t *imu)
 {
     if (imu == NULL)
@@ -164,11 +182,13 @@ ICM42670_Status_t ICM42670_ReadAll(ICM42670_Data_t *imu)
     imu->gy_dps = (float)imu->gy_raw / ICM_GYRO_LSB_PER_DPS;
     imu->gz_dps = (float)imu->gz_raw / ICM_GYRO_LSB_PER_DPS;
 
+/* Nhiệt độ °C = temp_raw/132,48 + 25. */
     imu->temperature_c = ((float)imu->temp_raw / 132.48f) + 25.0f;
 
     return ICM42670_OK;
 }
 
+/* Trừ gyro bias đã hiệu chỉnh, đơn vị độ/s. */
 void ICM42670_ApplyCalibration(ICM42670_t *dev, ICM42670_Data_t *imu)
 {
     if ((dev == NULL) || (imu == NULL))
@@ -179,6 +199,7 @@ void ICM42670_ApplyCalibration(ICM42670_t *dev, ICM42670_Data_t *imu)
     imu->gz_dps -= dev->gyro_bias_z_dps;
 }
 
+/* Lấy mẫu gyro đứng yên và lưu giá trị trung bình. */
 ICM42670_Status_t ICM42670_CalibrateGyro(ICM42670_t *dev, uint16_t samples, uint16_t sample_delay_ms)
 {
     if ((dev == NULL) || (samples == 0U))

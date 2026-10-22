@@ -1,43 +1,45 @@
+/* MMC5983MA: thanh ghi 0x00..0x06 chứa 18 bit XYZ; CONTROL0/1/2 ở 0x09/0x0A/0x0B. */
 #include "mmc5983ma.h"
 
-#define REG_XOUT0       0x00U
+#define REG_XOUT0       0x00U // 0x00: X MSB.
 
-#define REG_XOUT1       0x01U
+#define REG_XOUT1       0x01U // 0x01: X byte thấp.
 
-#define REG_YOUT0       0x02U
+#define REG_YOUT0       0x02U // 0x02: Y MSB.
 
-#define REG_YOUT1       0x03U
+#define REG_YOUT1       0x03U // 0x03: Y byte thấp.
 
-#define REG_ZOUT0       0x04U
+#define REG_ZOUT0       0x04U // 0x04: Z MSB.
 
-#define REG_ZOUT1       0x05U
+#define REG_ZOUT1       0x05U // 0x05: Z byte thấp.
 
-#define REG_XYZOUT2     0x06U
+#define REG_XYZOUT2     0x06U // 0x06: 2 bit LSB của mỗi trục.
 
-#define REG_STATUS      0x08U
+#define REG_STATUS      0x08U // 0x08: bit0=M_DONE.
 
-#define REG_CONTROL0    0x09U
+#define REG_CONTROL0    0x09U // 0x09: TM_M/SET/RESET.
 
-#define REG_CONTROL1    0x0AU
+#define REG_CONTROL1    0x0AU // 0x0A: BW và enable các trục.
 
-#define REG_CONTROL2    0x0BU
+#define REG_CONTROL2    0x0BU // 0x0B: liên tục hay single-shot.
 
-#define REG_PRODUCTID   0x2FU
+#define REG_PRODUCTID   0x2FU // 0x2F: mã sản phẩm.
 
-#define STATUS_MEAS_M_DONE  0x01U
+#define STATUS_MEAS_M_DONE  0x01U // 0x01: bit0=1 khi đo xong.
 
-#define CTRL0_TM_M          0x01U
+#define CTRL0_TM_M          0x01U // 0x01: trigger đo từ trường.
 
-#define CTRL0_SET           0x08U
+#define CTRL0_SET           0x08U // 0x08: tạo xung SET miền từ.
 
-#define CTRL0_RESET         0x10U
+#define CTRL0_RESET         0x10U // 0x10: tạo xung RESET miền từ (không phải soft reset).
 
-#define MMC5983_I2C_TIMEOUT_MS  100U
+#define MMC5983_I2C_TIMEOUT_MS  100U // Timeout I2C 100 ms.
 
-#define MMC5983_MEAS_TIMEOUT_MS 10U
+#define MMC5983_MEAS_TIMEOUT_MS 10U // Chờ hoàn thành tối đa 10 ms.
 
-#define MMC5983_POLL_DELAY_MS   1U
+#define MMC5983_POLL_DELAY_MS   1U // Polling mỗi 1 ms.
 
+/* Ghi 1 byte vào thanh ghi I2C. */
 static HAL_StatusTypeDef WriteReg(MMC5983MA_t *dev, uint8_t reg, uint8_t data)
 {
     if ((dev == NULL) || (dev->hi2c == NULL))
@@ -52,6 +54,7 @@ static HAL_StatusTypeDef WriteReg(MMC5983MA_t *dev, uint8_t reg, uint8_t data)
                              MMC5983_I2C_TIMEOUT_MS);
 }
 
+/* Đọc len byte từ thanh ghi I2C. */
 static HAL_StatusTypeDef ReadReg(MMC5983MA_t *dev,
                                  uint8_t reg,
                                  uint8_t *data,
@@ -69,6 +72,7 @@ static HAL_StatusTypeDef ReadReg(MMC5983MA_t *dev,
                             MMC5983_I2C_TIMEOUT_MS);
 }
 
+/* Kiểm tra ID chip ở 0x2F. */
 uint8_t MMC5983_WhoAmI(MMC5983MA_t *dev)
 {
 
@@ -80,6 +84,7 @@ uint8_t MMC5983_WhoAmI(MMC5983MA_t *dev)
     return id;
 }
 
+/* Tạo xung RESET, SET rồi cấu hình phép đo từ trường. */
 HAL_StatusTypeDef MMC5983_Init(MMC5983MA_t *dev)
 {
     if ((dev == NULL) || (dev->hi2c == NULL))
@@ -98,25 +103,30 @@ HAL_StatusTypeDef MMC5983_Init(MMC5983MA_t *dev)
 
     HAL_Delay(1U);
 
+/* 0x10 (bit4): xung RESET làm mới trạng thái từ hóa. */
     if (WriteReg(dev, REG_CONTROL0, CTRL0_RESET) != HAL_OK)
         return HAL_ERROR;
 
     HAL_Delay(1U);
 
+/* 0x08 (bit3): xung SET làm mới trạng thái từ hóa. */
     if (WriteReg(dev, REG_CONTROL0, CTRL0_SET) != HAL_OK)
         return HAL_ERROR;
 
     HAL_Delay(1U);
 
+/* 0x00: BW[1:0]=00 => băng thông 100 Hz (~8 ms/đo); bật XYZ. */
     if (WriteReg(dev, REG_CONTROL1, 0x00U) != HAL_OK)
         return HAL_ERROR;
 
+/* 0x00: Cmm_en=0 => single-shot; không bật liên tục. */
     if (WriteReg(dev, REG_CONTROL2, 0x00U) != HAL_OK)
         return HAL_ERROR;
 
     return HAL_OK;
 }
 
+/* Trigger đo, poll DONE và ghép 7 byte thành XYZ 18-bit. */
 HAL_StatusTypeDef MMC5983_ReadRaw(MMC5983MA_t *dev,
                                   int32_t *x,
                                   int32_t *y,
@@ -176,6 +186,7 @@ HAL_StatusTypeDef MMC5983_ReadRaw(MMC5983MA_t *dev,
     return HAL_OK;
 }
 
+/* Đổi raw sang gauss theo (raw-131072)/16384. */
 HAL_StatusTypeDef MMC5983_ReadMag(MMC5983MA_t *dev,
                                   float *x,
                                   float *y,
@@ -194,6 +205,7 @@ HAL_StatusTypeDef MMC5983_ReadMag(MMC5983MA_t *dev,
     if (status != HAL_OK)
         return status;
 
+/* Raw offset 131072 = 0 G; 16384 LSB/G; kết quả G, không phải µT. */
     *x = ((float)raw_x - 131072.0f) / 16384.0f;
     *y = ((float)raw_y - 131072.0f) / 16384.0f;
     *z = ((float)raw_z - 131072.0f) / 16384.0f;
@@ -205,8 +217,9 @@ HAL_StatusTypeDef MMC5983_ReadMag(MMC5983MA_t *dev,
     return HAL_OK;
 }
 
-#define MMC5983_FAST_I2C_TIMEOUT_MS 3U
+#define MMC5983_FAST_I2C_TIMEOUT_MS 3U // Timeout giao dịch I2C nhanh 3 ms.
 
+/* Ghi TM_M=1 để bắt đầu một phép đo. */
 HAL_StatusTypeDef MMC5983_StartMeasurement(MMC5983MA_t *dev)
 {
     if ((dev == NULL) || (dev->hi2c == NULL)) return HAL_ERROR;
@@ -216,6 +229,7 @@ HAL_StatusTypeDef MMC5983_StartMeasurement(MMC5983MA_t *dev)
                              MMC5983_FAST_I2C_TIMEOUT_MS);
 }
 
+/* Trả HAL_BUSY nếu chưa xong, nếu xong trả gauss. */
 HAL_StatusTypeDef MMC5983_ReadMagIfReady(MMC5983MA_t *dev,
                                          float *x, float *y, float *z)
 {
@@ -240,6 +254,7 @@ HAL_StatusTypeDef MMC5983_ReadMagIfReady(MMC5983MA_t *dev,
                            ((buf[6] >> 4) & 0x03U));
     dev->raw_z = (int32_t)(((uint32_t)buf[4] << 10) | ((uint32_t)buf[5] << 2) |
                            ((buf[6] >> 2) & 0x03U));
+/* Đổi XYZ raw 18-bit sang G; nhân 100 nếu cần µT. */
     dev->mag_x = *x = ((float)dev->raw_x - 131072.0f) / 16384.0f;
     dev->mag_y = *y = ((float)dev->raw_y - 131072.0f) / 16384.0f;
     dev->mag_z = *z = ((float)dev->raw_z - 131072.0f) / 16384.0f;
