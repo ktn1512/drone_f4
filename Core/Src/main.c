@@ -729,6 +729,7 @@ static void MX_I2C1_Init(void) {
 	hi2c1.Init.ClockSpeed = 100000;
 	hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
 	hi2c1.Init.OwnAddress1 = 0;
+	/* I2C1 OAR1 ADDMODE=0: dia chi slave 7-bit. */
 	hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
 	hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
 	hi2c1.Init.OwnAddress2 = 0;
@@ -762,6 +763,7 @@ static void MX_I2C2_Init(void) {
 	hi2c2.Init.ClockSpeed = 100000;
 	hi2c2.Init.DutyCycle = I2C_DUTYCYCLE_2;
 	hi2c2.Init.OwnAddress1 = 0;
+	/* I2C2 OAR1 ADDMODE=0: dia chi slave 7-bit. */
 	hi2c2.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
 	hi2c2.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
 	hi2c2.Init.OwnAddress2 = 0;
@@ -795,8 +797,11 @@ static void MX_SPI1_Init(void) {
 	hspi1.Init.Mode = SPI_MODE_MASTER;
 	hspi1.Init.Direction = SPI_DIRECTION_2LINES;
 	hspi1.Init.DataSize = SPI_DATASIZE_8BIT;
+	/* SPI1 CR1 CPOL=0: SCK o muc thap khi idle. */
 	hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
+	/* SPI1 CR1 CPHA=0: lay mau tai canh len dau tien, SPI mode 0. */
 	hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
+	/* SPI1 CR1 SSM=1: CS PA4 dieu khien bang GPIO, khong dung NSS hardware. */
 	hspi1.Init.NSS = SPI_NSS_SOFT;
 	/* SPI1 clock = 84/16 = 5,25 MHz. */
 	hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_16;
@@ -832,8 +837,11 @@ static void MX_SPI2_Init(void) {
 	hspi2.Init.Mode = SPI_MODE_MASTER;
 	hspi2.Init.Direction = SPI_DIRECTION_2LINES;
 	hspi2.Init.DataSize = SPI_DATASIZE_8BIT;
+	/* SPI2 CPOL=0: SCK idle low. */
 	hspi2.Init.CLKPolarity = SPI_POLARITY_LOW;
+	/* SPI2 CPHA=0: lay mau tai canh len, mode 0. */
 	hspi2.Init.CLKPhase = SPI_PHASE_1EDGE;
+	/* SPI2 SSM=1: NSS software. */
 	hspi2.Init.NSS = SPI_NSS_SOFT;
 	/* SPI2 clock = 42/16 = 2,625 MHz. */
 	hspi2.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_16;
@@ -870,10 +878,12 @@ static void MX_TIM5_Init(void) {
 	htim5.Instance = TIM5;
 	/* TIM5 PSC=83: 84MHz/(83+1) = 1MHz => 1 tick = 1µs. */
 	htim5.Init.Prescaler = 83;
+	/* TIM5 CR1 DIR=0: CNT dem tang tu 0 den ARR. */
 	htim5.Init.CounterMode = TIM_COUNTERMODE_UP;
 	/* TIM5 ARR=4999: 5000 ticks/chu kỳ => PWM 200Hz. */
 	htim5.Init.Period = 4999;
 	htim5.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+	/* TIM5 CR1 ARPE=0: ghi ARR co hieu luc ngay. */
 	htim5.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
 	if (HAL_TIM_PWM_Init(&htim5) != HAL_OK) {
 		Error_Handler();
@@ -886,7 +896,9 @@ static void MX_TIM5_Init(void) {
 	}
 	/* PWM mode 1: CCR là số tick mức cao (µs). */
 	sConfigOC.OCMode = TIM_OCMODE_PWM1;
+	/* TIM5 CCRx ban dau=0: duty 0%; sau do dat CCR=1000 de tao xung 1000 us. */
 	sConfigOC.Pulse = 0;
+	/* TIM5 CCER CCxP=0: xung PWM active high. */
 	sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
 	sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
 	if (HAL_TIM_PWM_ConfigChannel(&htim5, &sConfigOC, TIM_CHANNEL_1)
@@ -961,8 +973,11 @@ static void MX_USART6_UART_Init(void) {
 	huart6.Instance = USART6;
 	/* USART6 LoRa E220 9600 baud, 8N1. */
 	huart6.Init.BaudRate = 9600;
+	/* USART6 CR1 M=0: khung 8 bit. */
 	huart6.Init.WordLength = UART_WORDLENGTH_8B;
+	/* USART6 CR2 STOP=00: 1 stop bit. */
 	huart6.Init.StopBits = UART_STOPBITS_1;
+	/* USART6 CR1 PCE=0: khong parity. */
 	huart6.Init.Parity = UART_PARITY_NONE;
 	huart6.Init.Mode = UART_MODE_TX_RX;
 	huart6.Init.HwFlowCtl = UART_HWCONTROL_NONE;

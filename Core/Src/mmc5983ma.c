@@ -103,23 +103,23 @@ HAL_StatusTypeDef MMC5983_Init(MMC5983MA_t *dev)
 
     HAL_Delay(1U);
 
-/* 0x10 (bit4): xung RESET làm mới trạng thái từ hóa. */
+/* CONTROL0 (0x09) <- 0x10 = 0001_0000: bit4=RESET (xung reset tu hoa); bit3 SET=0, bit0 TM_M=0. */
     if (WriteReg(dev, REG_CONTROL0, CTRL0_RESET) != HAL_OK)
         return HAL_ERROR;
 
     HAL_Delay(1U);
 
-/* 0x08 (bit3): xung SET làm mới trạng thái từ hóa. */
+/* CONTROL0 (0x09) <- 0x08 = 0000_1000: bit3=SET (xung set tu hoa); bit4 RESET=0, bit0 TM_M=0. */
     if (WriteReg(dev, REG_CONTROL0, CTRL0_SET) != HAL_OK)
         return HAL_ERROR;
 
     HAL_Delay(1U);
 
-/* 0x00: BW[1:0]=00 => băng thông 100 Hz (~8 ms/đo); bật XYZ. */
+/* CONTROL1 (0x0A) <- 0x00 = 0000_0000: BW[1:0]=00 (~8 ms/do, 100 Hz max); X/Y/Z_INHIBIT[4:2]=000 (bat ca 3 truc); SW_RST[7]=0. Lua chon BW: 01=200Hz, 10=400Hz, 11=800Hz max. */
     if (WriteReg(dev, REG_CONTROL1, 0x00U) != HAL_OK)
         return HAL_ERROR;
 
-/* 0x00: Cmm_en=0 => single-shot; không bật liên tục. */
+/* CONTROL2 (0x0B) <- 0x00 = 0000_0000: Cmm_en(bit3)=0 => single-shot; CM_Freq[2:0]=000 (khong co y nghia khi Cmm_en=0); EN_PRD_SET[7]=0. */
     if (WriteReg(dev, REG_CONTROL2, 0x00U) != HAL_OK)
         return HAL_ERROR;
 
@@ -140,6 +140,7 @@ HAL_StatusTypeDef MMC5983_ReadRaw(MMC5983MA_t *dev,
 
     uint8_t buf[7] = {0U};
 
+    /* CONTROL0 (0x09) <- 0x01 = 0000_0001: bit0 TM_M=1, bat dau do tu truong 1 lan. */
     if (WriteReg(dev, REG_CONTROL0, CTRL0_TM_M) != HAL_OK)
         return HAL_ERROR;
 
@@ -150,6 +151,7 @@ HAL_StatusTypeDef MMC5983_ReadRaw(MMC5983MA_t *dev,
         if (ReadReg(dev, REG_STATUS, &status, 1U) != HAL_OK)
             return HAL_ERROR;
 
+        /* STATUS (0x08): kiem tra bit0=1 neu ket thuc do; bit khac khong dung de xac nhan. */
         if ((status & STATUS_MEAS_M_DONE) != 0U)
             break;
 
@@ -223,6 +225,7 @@ HAL_StatusTypeDef MMC5983_ReadMag(MMC5983MA_t *dev,
 HAL_StatusTypeDef MMC5983_StartMeasurement(MMC5983MA_t *dev)
 {
     if ((dev == NULL) || (dev->hi2c == NULL)) return HAL_ERROR;
+    /* CONTROL0 (0x09) <- 0x01: kich phep do single-shot, khong doi status DONE tai day. */
     uint8_t cmd = CTRL0_TM_M;
     return HAL_I2C_Mem_Write(dev->hi2c, MMC5983_I2C_ADDR, REG_CONTROL0,
                              I2C_MEMADD_SIZE_8BIT, &cmd, 1U,
@@ -241,6 +244,7 @@ HAL_StatusTypeDef MMC5983_ReadMagIfReady(MMC5983MA_t *dev,
                               REG_STATUS, I2C_MEMADD_SIZE_8BIT,
                               &status, 1U, MMC5983_FAST_I2C_TIMEOUT_MS);
     if (r != HAL_OK) return r;
+    /* STATUS (0x08), bit0=0: phep do chua hoan thanh. */
     if ((status & STATUS_MEAS_M_DONE) == 0U) return HAL_BUSY;
 
     uint8_t buf[7] = {0};
