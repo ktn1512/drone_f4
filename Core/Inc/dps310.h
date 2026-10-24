@@ -1,6 +1,6 @@
-/* DPS310: cam bien ap suat + nhiet do I2C, do cao tuong doi (m).
- * Ket noi: I2C2 PB10=SCL, PB3=SDA trong drone_f4/ver0.1.
- * Driver chi doc cam bien, KHONG dieu khien motor/PID.
+/* DPS310 SPI 4-wire: pressure, temperature and relative altitude.
+ * STM32F401 drone_f4/ver0.1: SPI2 PB13=SCK PB14=MISO PB15=MOSI; PB12=CS.
+ * SPI MODE 3: CPOL=1, CPHA=1. No motor/PID changes in this driver.
  */
 #ifndef DPS310_H
 #define DPS310_H
@@ -8,42 +8,51 @@
 #include "stm32f4xx_hal.h"
 #include <stdint.h>
 
-#define DPS310_SAMPLE_HOME_COUNT 64U   /* 64 mau dau (khoang 2 s) lam moc do cao */
+#define DPS310_SAMPLE_HOME_COUNT 64U /* ~2 s at 32 Hz with drone stationary */
 
 typedef struct {
-    I2C_HandleTypeDef *hi2c;
-    uint16_t address;                /* Dia chi 7-bit da dich trai 1 cho STM32 HAL */
+    SPI_HandleTypeDef *hspi;      /* SPI peripheral, configured for Mode 3 */
+    GPIO_TypeDef *cs_port;        /* CS pin GPIO port */
+    uint16_t cs_pin;              /* CS pin GPIO mask */
     uint8_t initialized;
     uint8_t valid;
     uint8_t home_valid;
 
+    /* Factory calibration coefficients, sign extended to 32-bit. */
     int32_t c0, c1, c00, c10, c01, c11, c20, c21, c30;
-    float pressure_pa;              /* Ap suat da bu nhiet (Pa) */
-    float pressure_filtered_pa;     /* Ap suat sau low-pass (Pa) */
-    float temperature_c;            /* Nhiet do (do C) */
-    float altitude_isa_m;           /* Do cao xap xi theo khi quyen chuan (m) */
-    float altitude_rel_m;           /* Do cao so voi luc lay moc (m) */
-    float home_pressure_pa;
+
+    float pressure_pa;            /* Compensated pressure (Pa) */
+    float pressure_filtered_pa;   /* First-order filtered pressure (Pa) */
+    float temperature_c;          /* Compensated temperature (deg C) */
+    float altitude_isa_m;         /* ISA altitude, P0=101325 Pa (m) */
+    float altitude_rel_m;         /* Relative to averaged home pressure (m) */
+    float home_pressure_pa;       /* Home reference pressure (Pa) */
     float home_pressure_sum;
     uint16_t home_samples;
-    uint32_t last_update_ms;
+    uint32_t last_update_ms;      /* Tick of last NEW pressure sample */
+    uint32_t last_poll_ms;
     uint32_t sample_count;
     uint32_t error_count;
 } DPS310_t;
 
-/* Tu dong tim dia chi I2C 0x77/0x76; reset, doc he so calibration,
- * PRS: 32 Hz, 8x; TMP: 4 Hz, 1x; background P+T.
- * Chi goi mot lan khi khoi dong; co HAL_Delay trong Init.
+/* Boot DPS310, read coefficients, start background P/T measurement.
+ * Pressure 32 Hz, 8x oversampling; temperature 4 Hz, 1x.
+ * Uses HAL_Delay only during initialization. Caller must configure SPI Mode 3.
  */
-HAL_StatusTypeDef DPS310_Init(DPS310_t *dev, I2C_HandleTypeDef *hi2c);
+HAL_StatusTypeDef DPS310_Init(DPS310_t *dev,
+                              SPI_HandleTypeDef *hspi,
+                              GPIO_TypeDef *cs_port,
+                              uint16_t cs_pin);
 
-/* Khong HAL_Delay. HAL_OK: co mau ap suat moi; HAL_BUSY: chua co mau;
- * HAL_ERROR/HAL_TIMEOUT: giao dich/doc khong hop le.
+/* Non-delaying, poll at most once / 5 ms.
+ * HAL_OK = new sample; HAL_BUSY = no new data; others = bus/format error.
+ * Uses blocking HAL SPI transactions with short (2 ms) timeout; avoid
+ * invoking from interrupts. Read preferably outside time-critical control.
  */
 HAL_StatusTypeDef DPS310_ReadIfReady(DPS310_t *dev);
 
-/* Lay lai moc ap suat khi drone dang dung yen, motor chua quay.
- * Sau 64 mau hop le, home_valid = 1.
+/* Reset altitude zero; next 64 readings are averaged as home pressure.
+ * Reset only while motors are stopped and drone is stationary.
  */
 void DPS310_ResetHome(DPS310_t *dev);
 
