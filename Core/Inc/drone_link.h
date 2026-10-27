@@ -1,4 +1,4 @@
-/* Liên kết LoRa: payload ASCII + *checksum XOR, gói T/P/G/S. */
+/* Lien ket LoRa: T/P/G/S ASCII + *checksum XOR. */
 #ifndef DRONE_LINK_H
 #define DRONE_LINK_H
 
@@ -8,11 +8,10 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define DRONE_LINK_MIN_THR 1000U // 1000 µs là throttle nhỏ nhất.
-
-#define DRONE_LINK_MAX_THR 1700U // 1700 µs là throttle tối đa.
-
-#define DRONE_LINK_TIMEOUT_MS 4500U // 4500 ms mất gói T thì throttle trở về 1000 µs.
+#define DRONE_LINK_MIN_THR 1000U
+#define DRONE_LINK_MAX_THR 1700U
+#define DRONE_LINK_TIMEOUT_MS 4500U
+#define DRONE_LINK_CLIMB_TIMEOUT_MS 900U
 
 typedef struct {
     E220_t *radio;
@@ -23,6 +22,10 @@ typedef struct {
     bool rx_discard;
     uint16_t throttle_us;
     uint32_t last_throttle_ms;
+
+    /* New T frame: T,seq,throttle,mode,climb_percent. mode=1: ALT_HOLD. */
+    bool alt_hold_requested;
+    int16_t climb_percent;
 
     char reply_payload[128];
     bool reply_pending;
@@ -45,13 +48,10 @@ typedef struct {
 
 void DroneLink_Init(DroneLink_t *link, E220_t *radio,
                     AngleController_t *angle, RateController_t *rate);
-
 void DroneLink_Poll(DroneLink_t *link);
-
 void DroneLink_SetMinimumThrottle(DroneLink_t *link);
-
 uint16_t DroneLink_Throttle(const DroneLink_t *link);
-
+int16_t DroneLink_ClimbCommand(const DroneLink_t *link);
 bool DroneLink_SendStatus(DroneLink_t *link, float roll, float pitch, float yaw,
                           uint16_t m1, uint16_t m2, uint16_t m3, uint16_t m4);
 #endif

@@ -30,6 +30,8 @@
 #include "mixer.h"
 #include "mahony.h"
 #include "drone_link.h"
+#include "dps310.h"
+#include "altitude_hold.h"
 
 #include "stdio.h"
 #include "string.h"
@@ -49,18 +51,18 @@
 #define CONTROL_MIN_DT_US 500U
 #define CONTROL_MAX_DT_US 10000U
 /* MMC: 25 Hz, chia làm hai pha không dùng HAL_Delay trong PID 500 Hz. */
-#define MAG_PERIOD_MS           40U
-#define MAG_CONVERSION_WAIT_MS   4U
-#define MAG_MEAS_TIMEOUT_MS     25U
-#define MAG_FRESH_TIMEOUT_MS   300U
-#define MAG_FILTER_ALPHA       0.12f
-#define MAG_MAX_JUMP_DEG       35.0f
+#define MAG_PERIOD_MS 40U
+#define MAG_CONVERSION_WAIT_MS 4U
+#define MAG_MEAS_TIMEOUT_MS 25U
+#define MAG_FRESH_TIMEOUT_MS 300U
+#define MAG_FILTER_ALPHA 0.12f
+#define MAG_MAX_JUMP_DEG 35.0f
 /* Offset phần cứng MMC đã dùng trong chương trình đo heading trước đây (Gauss).
  * Cần hiệu chuẩn lại XYZ/hard-iron/soft-iron trên drone đã lắp hoàn chỉnh. */
-#define MAG_OFFSET_X_G          0.20172f
-#define MAG_OFFSET_Y_G          0.328185f
-#define MAG_OFFSET_Z_G          0.0f
-#define RAD_TO_DEG             57.295779513f
+#define MAG_OFFSET_X_G 0.20172f
+#define MAG_OFFSET_Y_G 0.328185f
+#define MAG_OFFSET_Z_G 0.0f
+#define RAD_TO_DEG 57.295779513f
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -83,22 +85,36 @@ DMA_HandleTypeDef hdma_usart6_rx;
 DMA_HandleTypeDef hdma_usart6_tx;
 
 /* USER CODE BEGIN PV */
+/*===Khai báo lora*/
 E220_t lora;
 
 volatile uint32_t e220_uart_tx_drone = 0;
 
+/*Khai báo magnetometer*/
 MMC5983MA_t mmc;
 float mx, my, mz;
 HAL_StatusTypeDef mmc_status;
 
+/*Khai báo IMU*/
 ICM42670_t icm;
 ICM42670_Data_t imu;
 
+/* Khai báo baro*/
+DPS310_t dps310;
+
+/* ALT_HOLD: control independent of Roll/Pitch/Yaw PID. */
+AltitudeHold_t altitude_hold;
+static uint8_t alt_hold_blocked = 0U;
+static uint8_t alt_hold_prev_request = 0U;
+static uint32_t alt_hold_faults = 0U;
+
+/*Bộ lọc mahony*/
 Mahony_t mahony;
 
 AngleController_t angle_ctrl;
 RateController_t rate_ctrl;
 
+/*mixer motor*/
 MotorMixer_t motor;
 
 DroneLink_t drone_link;
@@ -174,7 +190,7 @@ static void Control_Reset(void) {
 	pitch_p_term = pitch_i_term = pitch_d_term = 0.0f;
 }
 
-/** @brief Ghi bốn lệnh motor theo thứ tự M1..M4 đã xác nhận trên khung. */
+/** @brief Ghi bốn lệnh motor theo thứ tự M1..M4. */
 static void Motors_Write(void) {
 	__HAL_TIM_SET_COMPARE(&htim5, TIM_CHANNEL_1, motor.m1);
 	__HAL_TIM_SET_COMPARE(&htim5, TIM_CHANNEL_2, motor.m2);
@@ -187,6 +203,8 @@ static void Control_Stop(void) {
 	DroneLink_SetMinimumThrottle(&drone_link);
 	throttle = (float) DRONE_LINK_MIN_THR;
 	Control_Reset();
+	AltitudeHold_Reset(&altitude_hold);
+	alt_hold_blocked = 1U;
 	motor.m1 = motor.m2 = motor.m3 = motor.m4 = DRONE_LINK_MIN_THR;
 	Motors_Write();
 }
@@ -389,6 +407,12 @@ int main(void) {
 		Error_Handler();
 	}
 
+	if (DPS310_Init(&dps310, &hspi2,
+	GPIOB,
+	GPIO_PIN_12) != HAL_OK) {
+		Error_Handler();
+	}
+
 	HAL_TIM_PWM_Start(&htim5, TIM_CHANNEL_1);
 	HAL_TIM_PWM_Start(&htim5, TIM_CHANNEL_2);
 	HAL_TIM_PWM_Start(&htim5, TIM_CHANNEL_3);
@@ -399,7 +423,19 @@ int main(void) {
 	__HAL_TIM_SET_COMPARE(&htim5, TIM_CHANNEL_3, 1000);
 	__HAL_TIM_SET_COMPARE(&htim5, TIM_CHANNEL_4, 1000);
 
-	HAL_Delay(4000);
+	uint32_t baro_cal_start = HAL_GetTick();
+
+	while ((HAL_GetTick() - baro_cal_start) < 4000U) {
+		DPS310_ReadIfReady(&dps310);
+		HAL_Delay(5U);
+	}
+
+	if (!dps310.home_valid) {
+		HAL_UART_Transmit(&huart1, (uint8_t*) "DPS310 CAL ERROR\r\n",
+				sizeof("DPS310 CAL ERROR\r\n") - 1U, 100U);
+
+		Error_Handler();
+	}
 
 	const uint16_t tilt_samples = 100U;
 	float ax_sum = 0.0f;
@@ -428,6 +464,7 @@ int main(void) {
 	}
 
 	DroneLink_Init(&drone_link, &lora, &angle_ctrl, &rate_ctrl);
+	AltitudeHold_Reset(&altitude_hold);
 	motor.m1 = motor.m2 = motor.m3 = motor.m4 = 1000U;
 
 	/* DWT có trên Cortex-M4: đo dt bằng chu kỳ CPU, không lượng tử hóa 1 ms.
@@ -510,7 +547,45 @@ int main(void) {
 
 		// roll_deg  = -roll_deg;
 		// pitch_deg = -pitch_deg;
-		throttle = (float) DroneLink_Throttle(&drone_link);
+		/* MANUAL / ALT_HOLD arbitration. ALT_HOLD is entered only on
+		 * a new mode=1 request, with valid DPS310 home and fresh samples.
+		 * Do not update barometer PID at IMU 500 Hz.
+		 */
+		const float manual_throttle = (float)DroneLink_Throttle(&drone_link);
+		const uint8_t alt_request = drone_link.alt_hold_requested ? 1U : 0U;
+		const uint32_t alt_now_ms = HAL_GetTick();
+		const uint8_t baro_healthy =
+				dps310.home_valid && dps310.valid &&
+				(alt_now_ms - dps310.last_update_ms <= 180U) &&
+				isfinite(dps310.altitude_rel_m);
+
+		if (!alt_request) {
+			if (altitude_hold.active) AltitudeHold_Reset(&altitude_hold);
+			/* User must switch to MANUAL before re-entering HOLD. */
+			if (manual_throttle <= 1000.0f ||
+			    alt_hold_prev_request) alt_hold_blocked = 0U;
+		} else {
+			if (manual_throttle <= 1000.0f || !baro_healthy) {
+				if (altitude_hold.active) ++alt_hold_faults;
+				AltitudeHold_Reset(&altitude_hold);
+				alt_hold_blocked = 1U;
+			}
+			if (!alt_hold_prev_request && !alt_hold_blocked) {
+				/* Prevent ALT_HOLD engaging on the ground or without
+				 * sufficient manual motor power; verify true flight separately.
+				 */
+				if (baro_healthy && manual_throttle >= 1200.0f &&
+				    dps310.altitude_rel_m >= 0.30f) {
+					if (!AltitudeHold_Start(&altitude_hold,
+					    dps310.altitude_rel_m, manual_throttle,
+					    dps310.last_update_ms))
+						alt_hold_blocked = 1U;
+				} else alt_hold_blocked = 1U;
+			}
+		}
+		alt_hold_prev_request = alt_request;
+		throttle = altitude_hold.active ?
+				altitude_hold.throttle_us : manual_throttle;
 		if (throttle > 1000.0f) {
 			/* Mặc định: góc P -> tốc độ PI. Giữ nguyên dấu IMU và mixer. */
 			AngleController_Update(&angle_ctrl, 0.0f, 0.0f, roll_deg, pitch_deg,
@@ -560,6 +635,23 @@ int main(void) {
 		/* Xử lý MMC sau PWM; cập nhật yaw fused cho chu kỳ điều khiển kế. */
 		Mag_Service();
 
+		/* DPS310 32 Hz: only update vertical PID when a NEW sample arrives. */
+		static uint32_t last_baro_tick = 0U;
+		uint32_t baro_now_ms = HAL_GetTick();
+		if ((baro_now_ms - last_baro_tick) >= 10U) {
+			last_baro_tick = baro_now_ms;
+			if (DPS310_ReadIfReady(&dps310) == HAL_OK &&
+			    altitude_hold.active && dps310.home_valid) {
+				if (!AltitudeHold_Update(&altitude_hold,
+				    dps310.altitude_rel_m, dps310.last_update_ms,
+				    DroneLink_ClimbCommand(&drone_link))) {
+					AltitudeHold_Reset(&altitude_hold);
+					alt_hold_blocked = 1U;
+					++alt_hold_faults;
+				}
+			}
+		}
+
 		(void) DroneLink_SendStatus(&drone_link, roll_deg, pitch_deg, yaw_deg,
 				motor.m1, motor.m2, motor.m3, motor.m4);
 
@@ -604,7 +696,9 @@ int main(void) {
 									" TX_BUSY=%lu TX_ERR=%lu UART_ERR=%lu\r\n"
 									"YAW fused=%.1f mag=%.1f raw_heading=%.1f target=%.1f"
 									" e=%.1f rate_sp=%.1f gz=%.1f out=%.1f"
-									" mag_age=%lu ok=%lu err=%lu reject=%lu hold=%u\r\n",
+									" mag_age=%lu ok=%lu err=%lu reject=%lu hold=%u\r\n"
+									"BARO alt=%.2f P=%.1f T=%.2f home=%u samples=%lu err=%lu age=%lu\r\n"
+									"ALT req=%u active=%u block=%u cmd=%d target=%.2f height=%.2f vz=%.2f vzsp=%.2f trim=%.0f I=%.0f out=%.0f faults=%lu\r\n",
 							(unsigned) DroneLink_Throttle(&drone_link),
 							roll_deg, pitch_deg, yaw_deg, roll_pid, pitch_pid,
 							(unsigned) motor.m1, (unsigned) motor.m2,
@@ -645,7 +739,25 @@ int main(void) {
 							(unsigned long) mag_ok_count,
 							(unsigned long) mag_error_count,
 							(unsigned long) mag_rejected_count,
-							(unsigned) yaw_target_latched);
+							(unsigned) yaw_target_latched,
+							dps310.altitude_rel_m, dps310.pressure_pa,
+							dps310.temperature_c, (unsigned) dps310.home_valid,
+							(unsigned long) dps310.sample_count,
+							(unsigned long) dps310.error_count,
+							(unsigned long) (HAL_GetTick()
+									- dps310.last_update_ms),
+							(unsigned) drone_link.alt_hold_requested,
+							(unsigned) altitude_hold.active,
+							(unsigned) alt_hold_blocked,
+							(int) DroneLink_ClimbCommand(&drone_link),
+							altitude_hold.target_m,
+							dps310.altitude_rel_m,
+							altitude_hold.vz_mps,
+							altitude_hold.vz_setpoint_mps,
+							altitude_hold.trim_us,
+							altitude_hold.integral_us,
+							altitude_hold.throttle_us,
+							(unsigned long) alt_hold_faults);
 
 			if ((len > 0) && ((size_t) len < sizeof(tx_frame))) {
 				if (HAL_UART_Transmit_IT(&huart1, (uint8_t*) tx_frame,
@@ -735,7 +847,6 @@ static void MX_I2C1_Init(void) {
 	/* USER CODE BEGIN I2C1_Init 2 */
 
 	/* USER CODE END I2C1_Init 2 */
-
 }
 
 /**
@@ -767,7 +878,6 @@ static void MX_I2C2_Init(void) {
 	/* USER CODE BEGIN I2C2_Init 2 */
 
 	/* USER CODE END I2C2_Init 2 */
-
 }
 
 /**
@@ -803,7 +913,6 @@ static void MX_SPI1_Init(void) {
 	/* USER CODE BEGIN SPI1_Init 2 */
 
 	/* USER CODE END SPI1_Init 2 */
-
 }
 
 /**
@@ -825,8 +934,8 @@ static void MX_SPI2_Init(void) {
 	hspi2.Init.Mode = SPI_MODE_MASTER;
 	hspi2.Init.Direction = SPI_DIRECTION_2LINES;
 	hspi2.Init.DataSize = SPI_DATASIZE_8BIT;
-	hspi2.Init.CLKPolarity = SPI_POLARITY_LOW;
-	hspi2.Init.CLKPhase = SPI_PHASE_1EDGE;
+	hspi2.Init.CLKPolarity = SPI_POLARITY_HIGH;
+	hspi2.Init.CLKPhase = SPI_PHASE_2EDGE;
 	hspi2.Init.NSS = SPI_NSS_SOFT;
 	hspi2.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_16;
 	hspi2.Init.FirstBit = SPI_FIRSTBIT_MSB;
@@ -839,7 +948,6 @@ static void MX_SPI2_Init(void) {
 	/* USER CODE BEGIN SPI2_Init 2 */
 
 	/* USER CODE END SPI2_Init 2 */
-
 }
 
 /**
@@ -898,7 +1006,6 @@ static void MX_TIM5_Init(void) {
 
 	/* USER CODE END TIM5_Init 2 */
 	HAL_TIM_MspPostInit(&htim5);
-
 }
 
 /**
@@ -929,7 +1036,6 @@ static void MX_USART1_UART_Init(void) {
 	/* USER CODE BEGIN USART1_Init 2 */
 
 	/* USER CODE END USART1_Init 2 */
-
 }
 
 /**
@@ -960,7 +1066,6 @@ static void MX_USART6_UART_Init(void) {
 	/* USER CODE BEGIN USART6_Init 2 */
 
 	/* USER CODE END USART6_Init 2 */
-
 }
 
 /**
@@ -978,7 +1083,6 @@ static void MX_DMA_Init(void) {
 	/* DMA2_Stream6_IRQn interrupt configuration */
 	HAL_NVIC_SetPriority(DMA2_Stream6_IRQn, 0, 0);
 	HAL_NVIC_EnableIRQ(DMA2_Stream6_IRQn);
-
 }
 
 /**
@@ -998,10 +1102,10 @@ static void MX_GPIO_Init(void) {
 	__HAL_RCC_GPIOB_CLK_ENABLE();
 
 	/*Configure GPIO pin Output Level */
-	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_RESET);
+	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_SET);
 
 	/*Configure GPIO pin Output Level */
-	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_RESET);
+	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_SET);
 
 	/*Configure GPIO pin : PA4 */
 	GPIO_InitStruct.Pin = GPIO_PIN_4;
@@ -1056,17 +1160,17 @@ void Error_Handler(void) {
 }
 #ifdef USE_FULL_ASSERT
 /**
-  * @brief  Reports the name of the source file and the source line number
-  *         where the assert_param error has occurred.
-  * @param  file: pointer to the source file name
-  * @param  line: assert_param error line source number
-  * @retval None
-  */
+ * @brief  Reports the name of the source file and the source line number
+ *         where the assert_param error has occurred.
+ * @param  file: pointer to the source file name
+ * @param  line: assert_param error line source number
+ * @retval None
+ */
 void assert_failed(uint8_t *file, uint32_t line)
 {
-  /* USER CODE BEGIN 6 */
-  /* User can add his own implementation to report the file name and line number,
-     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
-  /* USER CODE END 6 */
+	/* USER CODE BEGIN 6 */
+	/* User can add his own implementation to report the file name and line number,
+	   ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
+	/* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */

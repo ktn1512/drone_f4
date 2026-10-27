@@ -1,4 +1,4 @@
-/* Liên kết LoRa: payload ASCII + *checksum XOR, gói T/P/G/S. */
+/* LoRa payload ASCII + *checksum XOR, T/P/G/S frames. */
 #include "drone_link.h"
 #include <math.h>
 #include <stdio.h>
@@ -50,6 +50,15 @@ static bool parse_u32(const char *s, uint32_t *value) {
     return true;
 }
 
+static bool parse_climb(const char *s, int16_t *value) {
+    if (!s || !*s || !value) return false;
+    char *end = NULL;
+    long n = strtol(s, &end, 10);
+    if (end == s || *end || n < -100L || n > 100L) return false;
+    *value = (int16_t)n;
+    return true;
+}
+
 static bool parse_gain(const char *s, float *value) {
     if (!s || !*s) return false;
     char *end = NULL;
@@ -72,7 +81,6 @@ static PID_t *pid_from_id(DroneLink_t *l, uint32_t id) {
 }
 
 static void set_reply(DroneLink_t *l, const char *payload) {
-
     snprintf(l->reply_payload, sizeof(l->reply_payload), "%s", payload);
     l->reply_pending = true;
 }
@@ -85,10 +93,28 @@ static bool handle_line(DroneLink_t *l, char *line) {
     if (!kind || !parse_u32(seq_s, &seq)) return false;
 
     if (strcmp(kind, "T") == 0) {
-        uint32_t thr;
-        if (!parse_u32(strtok(NULL, ","), &thr) || strtok(NULL, ",") != NULL ||
-            thr < DRONE_LINK_MIN_THR || thr > DRONE_LINK_MAX_THR) return false;
+        uint32_t thr, mode = 0U;
+        int16_t climb = 0;
+        const char *thr_s = strtok(NULL, ",");
+        const char *mode_s = strtok(NULL, ",");
+        if (!parse_u32(thr_s, &thr) || thr < DRONE_LINK_MIN_THR ||
+            thr > DRONE_LINK_MAX_THR) return false;
+        if (mode_s != NULL) {
+            if (!parse_u32(mode_s, &mode) || mode > 1U) return false;
+            const char *climb_s = strtok(NULL, ",");
+            if (climb_s != NULL) {
+                if (!parse_climb(climb_s, &climb)) return false;
+            } else if (mode == 1U) {
+                /* ALT_HOLD always requires an explicit climb command. */
+                return false;
+            }
+            /* Compatibility: T,seq,throttle,0 is MANUAL. */
+        }
+        if (strtok(NULL, ",") != NULL) return false;
+        /* Previous frame T,seq,throttle remains MANUAL compatible. */
         l->throttle_us = (uint16_t)thr;
+        l->alt_hold_requested = (mode == 1U);
+        l->climb_percent = l->alt_hold_requested ? climb : 0;
         l->last_throttle_ms = HAL_GetTick();
         ++l->throttle_rx_count;
         l->status_seq = seq;
@@ -125,7 +151,6 @@ static bool handle_line(DroneLink_t *l, char *line) {
                      (unsigned long)seq, (unsigned long)id);
         }
     }
-
     l->status_pending = false;
     set_reply(l, reply);
     return true;
@@ -141,16 +166,25 @@ void DroneLink_Init(DroneLink_t *l, E220_t *radio,
     l->last_throttle_ms = HAL_GetTick();
 }
 
-void DroneLink_SetMinimumThrottle(DroneLink_t *l) { l->throttle_us = DRONE_LINK_MIN_THR; }
+void DroneLink_SetMinimumThrottle(DroneLink_t *l) {
+    l->throttle_us = DRONE_LINK_MIN_THR;
+    /* Do not erase mode here: prevents silently rearming ALT_HOLD in main. */
+    l->climb_percent = 0;
+}
 
-/* Trả throttle đã nhận hoặc 1000 khi timeout. */
 uint16_t DroneLink_Throttle(const DroneLink_t *l) {
     if ((uint32_t)(HAL_GetTick() - l->last_throttle_ms) > DRONE_LINK_TIMEOUT_MS)
         return DRONE_LINK_MIN_THR;
     return l->throttle_us;
 }
 
-/* Đọc từng byte, kiểm tra XOR và xử lý lệnh T/P/G. */
+int16_t DroneLink_ClimbCommand(const DroneLink_t *l) {
+    if (l == NULL || !l->alt_hold_requested) return 0;
+    if ((uint32_t)(HAL_GetTick() - l->last_throttle_ms) > DRONE_LINK_CLIMB_TIMEOUT_MS)
+        return 0;
+    return l->climb_percent;
+}
+
 void DroneLink_Poll(DroneLink_t *l) {
     if ((uint32_t)(HAL_GetTick() - l->last_throttle_ms) > DRONE_LINK_TIMEOUT_MS &&
         l->throttle_us != DRONE_LINK_MIN_THR) {

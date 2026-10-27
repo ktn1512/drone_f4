@@ -1,6 +1,6 @@
-../Core/Src/gps.c:17:15:NMEA_To_Degree	48	static
-../Core/Src/gps.c:29:19:GPS_Init	16	static
-../Core/Src/gps.c:39:13:GPS_ParseRMC	72	static
-../Core/Src/gps.c:129:6:GPS_RxCallback	16	static
-../Core/Src/gps.c:152:6:GPS_Process	136	static
-../Core/Src/gps.c:166:13:GPS_GetData	4	static
+../Core/Src/gps.c:19:15:NMEA_To_Degree	48	static
+../Core/Src/gps.c:31:19:GPS_Init	16	static
+../Core/Src/gps.c:42:13:GPS_ParseRMC	72	static
+../Core/Src/gps.c:132:6:GPS_RxCallback	16	static
+../Core/Src/gps.c:155:6:GPS_Process	136	static
+../Core/Src/gps.c:169:13:GPS_GetData	4	static

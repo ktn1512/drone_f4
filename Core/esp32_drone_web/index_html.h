@@ -27,7 +27,7 @@ button.alt{background:#334559}button.stop{background:#b52937}button:disabled{opa
 @media(max-width:480px){body{padding:12px}.pidrow{gap:5px}.pidrow input{padding:8px 5px}.pidrow div:first-child{font-size:12px}}
 </style></head><body>
 <h1>Drone Control Dashboard</h1>
-<p>ESP32 Wi-Fi (STA) → E220 UART → STM32G474. Thử trên bàn, tháo cánh quạt trước khi tăng xung ESC.</p>
+<p>ESP32 Wi-Fi (STA) → E220 UART → STM32F401. Thử trên bàn, tháo cánh quạt trước khi tăng xung ESC.</p>
 <div class="row"><span class="pill" id="radio">E220: chưa có phản hồi</span><span class="pill" id="operation">Không có yêu cầu PID</span></div>
 <section class="panel"><h2>Điều khiển ga trực tiếp</h2>
 <div class="row"><div><div class="big"><span id="throttleText">1000</span> <small>µs</small></div><small>1000–1700 µs</small></div>
@@ -35,6 +35,23 @@ button.alt{background:#334559}button.stop{background:#b52937}button:disabled{opa
 <input id="throttleRange" aria-label="Đặt mức ga" type="range" min="1000" max="1700" value="1000" step="1">
 <div class="row"><small>1000 µs</small><small>1700 µs</small></div>
 <p id="throttleMessage">Gửi trực tiếp T và nhận S phản hồi. Mất tín hiệu sẽ tự về 1000 µs.</p>
+</section>
+<section class="panel"><h2>ALT_HOLD - lên / xuống rồi nhả để giữ</h2>
+<p id="altState">MANUAL</p>
+<p id="climbState">Lệnh lên/xuống: 0 (giữ độ cao)</p>
+<div class="row">
+ <button id="holdEnable">Bật ALT_HOLD</button>
+ <button id="holdDisable" class="alt">Về MANUAL (cẩn thận thay đổi lực đẩy)</button>
+</div>
+<div class="row" style="margin-top:14px">
+ <button id="climbUp" style="touch-action:none">GIỮ ĐỂ LÊN</button>
+ <button id="climbDown" style="touch-action:none">GIỮ ĐỂ XUỐNG</button>
+ <button id="climbRelease" class="alt">NHẢ / GIỮ ĐỘ CAO</button>
+</div>
+<small>Chỉ là giao diện thử nghiệm, không dùng Wi-Fi để điều khiển bay tự do.
+Bật ALT_HOLD sau khi đã lên khỏi mặt đất và có DPS310 hợp lệ.
+Chữ YÊU CẦU không xác nhận STM32 đã vào chế độ; xem log ALT active=1 trên UART.
+Đưa ga về 1000 µs là lệnh dừng motor, KHÔNG phải lệnh giữ độ cao.</small>
 </section>
 <section class="panel"><h2>Cấu hình 5 bộ PID</h2>
 <div class="pidrow head"><div>Bộ điều khiển</div><div>Kp</div><div>Ki</div><div>Kd</div></div>
@@ -70,6 +87,54 @@ names.forEach((name,i)=>{
  });fields.appendChild(row);
 });
 const slider=el('throttleRange');
+let altRequested=false;
+let climbTimer=null;
+let pendingAlt=null;
+let sendingAlt=false;
+/* One HTTP request at a time, replace outdated pending actions.
+   Prevents a delayed LÊN packet being queued AFTER a release. */
+async function sendAlt(enable, climb){
+ pendingAlt={enable:!!enable,climb};
+ if(sendingAlt) return;
+ sendingAlt=true;
+ try {
+  while(pendingAlt!==null){
+   const action=pendingAlt;
+   pendingAlt=null;
+   await post('/api/althold',{enable:action.enable?1:0,climb:action.climb});
+   altRequested=action.enable;
+  }
+ } catch(e) {
+  pendingAlt=null;
+  note(e.message,true);
+ } finally { sendingAlt=false; }
+}
+function stopClimb(){
+ if(climbTimer!==null){clearInterval(climbTimer);climbTimer=null;}
+ if(altRequested) sendAlt(true,0);
+}
+function bindClimb(id, value){
+ const b=el(id);
+ b.addEventListener('pointerdown', ev=>{
+   ev.preventDefault();
+   if(!altRequested) return;
+   b.setPointerCapture(ev.pointerId);
+   if(climbTimer!==null){clearInterval(climbTimer);climbTimer=null;}
+   sendAlt(true,value);
+   climbTimer=setInterval(()=>sendAlt(true,value),250);
+ });
+ ['pointerup','pointercancel','lostpointercapture'].forEach(name=>
+     b.addEventListener(name,stopClimb));
+}
+el('holdEnable').onclick=()=>sendAlt(true,0);
+el('holdDisable').onclick=()=>{stopClimb();sendAlt(false,0);};
+el('climbRelease').onclick=stopClimb;
+bindClimb('climbUp',100);
+bindClimb('climbDown',-100);
+window.addEventListener('blur',stopClimb);
+document.addEventListener('visibilitychange',()=>{
+ if(document.hidden) stopClimb();
+});
 let pidEditing=false,lastPIDKey='',timer=null,lastOp='';
 function note(t,error=false){el('message').textContent=t;el('message').className=error?'err':'success';}
 async function post(url,values={}){
@@ -99,6 +164,13 @@ async function refresh(){
  try{
   const r=await fetch('/api/state',{cache:'no-store'});if(!r.ok)throw new Error(`HTTP ${r.status}`);
   const d=await r.json(),radio=d.radio||{};
+  altRequested=!!d.altHoldRequested;
+  el('altState').textContent=altRequested?'Đang YÊU CẦU ALT_HOLD':'MANUAL';
+  const cmd=Number(d.altHoldClimb??0);
+  el('climbState').textContent=cmd>0?'Lệnh: LÊN':cmd<0?'Lệnh: XUỐNG':'Lệnh: 0 (giữ độ cao)';
+  el('applyBtn').disabled=altRequested;
+  el('readBtn').disabled=altRequested;
+  slider.disabled=altRequested;
   const recentRx=radio.rxAgeMs!=null&&radio.rxAgeMs<=4500;
   el('radio').textContent=d.link?'E220: có status STM32':recentRx?'E220: có RX, chờ status':'E220: chưa có status';
   el('radioTx').textContent=radio.txCount??0;el('radioRx').textContent=radio.rxCount??0;

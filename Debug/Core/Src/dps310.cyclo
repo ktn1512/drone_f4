@@ -1,0 +1,9 @@
+../Core/Src/dps310.c:28:13:DPS310_CS	1
+../Core/Src/dps310.c:35:26:DPS310_ReadRegs	8
+../Core/Src/dps310.c:56:26:DPS310_WriteReg	4
+../Core/Src/dps310.c:69:16:DPS310_SignExtend	1
+../Core/Src/dps310.c:74:16:DPS310_Raw24	1
+../Core/Src/dps310.c:80:26:DPS310_ReadCoefficients	2
+../Core/Src/dps310.c:102:6:DPS310_ResetHome	2
+../Core/Src/dps310.c:112:19:DPS310_Init	22
+../Core/Src/dps310.c:193:19:DPS310_ReadIfReady	20

@@ -17,9 +17,20 @@ constexpr int E220_AUX = 6;
 #elif defined(CONFIG_IDF_TARGET_ESP32)
 constexpr int E220_RX = 16;
 constexpr int E220_TX = 17;
+/* Day cu: M0=25 M1=26 AUX=27.
+ * Neu da DAU LAI DAY theo file 154138: M0=26 M1=27 AUX=25,
+ * doi gia tri E220_PINMAP_SWAPPED thanh 1.
+ */
+#define E220_PINMAP_SWAPPED 0
+#if E220_PINMAP_SWAPPED
+constexpr int E220_M0 = 26;
+constexpr int E220_M1 = 27;
+constexpr int E220_AUX = 25;
+#else
 constexpr int E220_M0 = 25;
 constexpr int E220_M1 = 26;
 constexpr int E220_AUX = 27;
+#endif
 #else
 #error "Select ESP32 Dev Module or ESP32S3 Dev Module."
 #endif
@@ -28,11 +39,14 @@ constexpr uint16_t MIN_THR = 1000;
 constexpr uint16_t MAX_THR = 1700;
 constexpr uint16_t MAX_MOTOR_STATUS_US = 2000;
 
-constexpr uint32_t THROTTLE_PERIOD_MS = 1500;
+constexpr uint32_t THROTTLE_PERIOD_MS = 1500; // Baseline da su dung truoc ALT_HOLD
+constexpr uint32_t ALT_TX_PERIOD_MS = 650;  // Thu nghiem ALT, chi khi nhan duoc status S
+constexpr uint32_t ALT_STATUS_TIMEOUT_MS = 1200; // Het han doi S, co the gui lai
 constexpr uint32_t PID_HEARTBEAT_MS = 2500;
 constexpr uint32_t CLIENT_TIMEOUT_MS = 3000;
 constexpr uint32_t STATUS_VALID_MS = 6500;
-constexpr uint32_t MIN_RADIO_GAP_MS = 900;
+constexpr uint32_t MIN_RADIO_GAP_MS = 900; // Khoang cach gui MANUAL cu
+constexpr uint32_t ALT_MIN_RADIO_GAP_MS = 450; // Thu nghiem, khong su dung bay tu do
 constexpr uint32_t AUX_SETTLE_MS = 3;
 constexpr uint32_t RX_PARTIAL_TIMEOUT_MS = 1200;
 constexpr size_t MAX_RADIO_PACKET_BYTES = 200;
@@ -55,10 +69,17 @@ PidGains pids[5] = {
 };
 
 uint16_t throttle = MIN_THR;
+/* ALT_HOLD; never infer a stick release from the old retained throttle. */
+bool altHoldMode = false;
+int16_t climbCommand = 0;
+uint32_t lastClimbUpdateMs = 0;
 uint32_t lastWebMs = 0;
 uint32_t lastTxMs = 0;
 uint32_t lastThrottleTxMs = 0;
 uint32_t nextSeq = 1;
+uint32_t lastThrottleSeq = 0;
+bool throttleReplyPending = false;
+uint32_t lastThrottleSendMs = 0;
 
 bool statusSeen = false;
 uint32_t lastStatusMs = 0;
@@ -178,7 +199,8 @@ bool radioAuxReady(uint32_t now) {
 }
 
 bool radioReady(uint32_t now) {
-  return radioStarted && radioAuxReady(now) && (uint32_t)(now - lastTxMs) >= MIN_RADIO_GAP_MS;
+  const uint32_t gap = altHoldMode ? ALT_MIN_RADIO_GAP_MS : MIN_RADIO_GAP_MS;
+  return radioStarted && radioAuxReady(now) && (uint32_t)(now - lastTxMs) >= gap;
 }
 
 bool sendRadioBytes(const String &packet, const String &description) {
@@ -211,7 +233,31 @@ bool sendRadio(const String &payload) {
   return sendRadioBytes(frameOf(payload), payload);
 }
 
+/* MANUAL: phat dung frame cu de tuong thich firmware STM32 truoc ALT_HOLD.
+ * ALT_HOLD: chi su dung 5 truong khi nguoi dung chu dong bat che do.
+ */
+String makeThrottlePayload(uint32_t seq) {
+  String payload = "T," + String(seq) + "," + String(throttle);
+  if (altHoldMode) {
+    payload += ",1," + String(climbCommand);
+  }
+  return payload;
+}
+
+bool sendThrottleFrame() {
+  const uint32_t seq = nextSeq;
+  if (!sendRadio(makeThrottlePayload(seq))) return false;
+  ++nextSeq;
+  lastThrottleSeq = seq;
+  throttleReplyPending = true;
+  lastThrottleSendMs = millis();
+  lastThrottleTxMs = lastThrottleSendMs;
+  return true;
+}
+
 void setMinimumThrottle(const char *reason) {
+  altHoldMode = false;
+  climbCommand = 0;
   if (throttle != MIN_THR) {
     throttle = MIN_THR;
     lastThrottleTxMs = millis() - THROTTLE_PERIOD_MS;
@@ -314,6 +360,8 @@ void onFrame(String frame) {
       rxMotors[2] = m3;
       rxMotors[3] = m4;
       lastStatusMs = millis();
+      if (throttleReplyPending && seq == lastThrottleSeq)
+        throttleReplyPending = false;
       statusSeen = true;
       ++validStatusCount;
       statusDiagnostic = "Status S hợp lệ";
@@ -383,6 +431,11 @@ void startOperation(OpType type) {
 
 void processRadioTx() {
   uint32_t now = millis();
+  /* If webpage freezes or pointer-up is lost, climb MUST go to zero. */
+  if (climbCommand != 0 && (uint32_t)(now - lastClimbUpdateMs) > 700U) {
+    climbCommand = 0;
+    lastThrottleTxMs = now - THROTTLE_PERIOD_MS;
+  }
   if (throttle > MIN_THR && (uint32_t)(now - lastWebMs) > CLIENT_TIMEOUT_MS)
     setMinimumThrottle("Web inactivity");
   if (throttle > MIN_THR && statusSeen && !freshStatus())
@@ -403,8 +456,7 @@ void processRadioTx() {
     }
 
     if ((uint32_t)(now - lastThrottleTxMs) >= PID_HEARTBEAT_MS) {
-      if (sendRadio("T," + String(nextSeq++) + "," + String(throttle)))
-        lastThrottleTxMs = millis();
+      (void)sendThrottleFrame();
       return;
     }
     if (attempts == 0) waitingSeq = nextSeq++;
@@ -426,9 +478,17 @@ void processRadioTx() {
     return;
   }
 
-  if ((uint32_t)(now - lastThrottleTxMs) >= THROTTLE_PERIOD_MS) {
-    if (sendRadio("T," + String(nextSeq++) + "," + String(throttle)))
-      lastThrottleTxMs = millis();
+  /* Khi ALT_HOLD: khong phat goi T moi ngay khi goi truoc chua co S,
+   * de tranh 2 bo E220 tranh nhau tren kenh vo tuyen.
+   * Neu mat S, thu lai sau timeout; khong bao gio giu lenh climb vo thoi han.
+   */
+  if (altHoldMode && throttleReplyPending &&
+      (uint32_t)(now - lastThrottleSendMs) < ALT_STATUS_TIMEOUT_MS)
+    return;
+
+  const uint32_t period = altHoldMode ? ALT_TX_PERIOD_MS : THROTTLE_PERIOD_MS;
+  if ((uint32_t)(now - lastThrottleTxMs) >= period) {
+    (void)sendThrottleFrame();
   }
 }
 
@@ -480,6 +540,8 @@ void setupWebRoutes() {
       }
       json += "]}";
     }
+    json += ",\"altHoldRequested\":" + String(altHoldMode ? "true" : "false");
+    json += ",\"altHoldClimb\":" + String(altHoldMode ? climbCommand : 0);
     json += '}';
     web.send(200, "application/json", json);
   });
@@ -496,6 +558,14 @@ void setupWebRoutes() {
       respondError("Ga phải từ 1000 đến 1700 µs");
       return;
     }
+    if (altHoldMode && value > MIN_THR) {
+      respondError("Tat ALT_HOLD truoc khi doi ga");
+      return;
+    }
+    if (value == MIN_THR) {
+      altHoldMode = false;
+      climbCommand = 0;
+    }
     throttle = (uint16_t)value;
     lastWebMs = millis();
     lastThrottleTxMs = millis() - THROTTLE_PERIOD_MS;
@@ -503,6 +573,7 @@ void setupWebRoutes() {
   });
 
   web.on("/api/pids", HTTP_POST, []() {
+    if (altHoldMode) { respondError("Tat ALT_HOLD truoc", 409); return; }
     if (operation != OP_NONE) {
       respondError("Đang có tác vụ PID khác", 409);
       return;
@@ -520,6 +591,7 @@ void setupWebRoutes() {
   });
 
   web.on("/api/readpid", HTTP_POST, []() {
+    if (altHoldMode) { respondError("Tat ALT_HOLD truoc", 409); return; }
     if (operation != OP_NONE) {
       respondError("Đang có tác vụ PID khác", 409);
       return;
@@ -527,6 +599,27 @@ void setupWebRoutes() {
     startOperation(OP_READ);
     respondOk();
   });
+  web.on("/api/althold", HTTP_POST, []() {
+    String e = web.arg("enable");
+    String s = web.arg("climb");
+    if ((e != "0" && e != "1") ||
+        (s != "-100" && s != "0" && s != "100")) {
+      respondError("Mode / climb invalid");
+      return;
+    }
+    bool enable = (e == "1");
+    if (enable && (!freshStatus() || operation != OP_NONE || throttle < 1200U)) {
+      respondError("Link/PID/throttle not ready");
+      return;
+    }
+    altHoldMode = enable;
+    climbCommand = enable ? (int16_t)s.toInt() : 0;
+    lastClimbUpdateMs = millis();
+    lastWebMs = millis();
+    lastThrottleTxMs = millis() - THROTTLE_PERIOD_MS;
+    respondOk();
+  });
+
   web.onNotFound([]() { web.send(404, "text/plain", "Not found"); });
 }
 
@@ -546,6 +639,7 @@ void setup() {
     ++radioTxErrors;
     Serial.println("E220 UART initialization failed");
   }
+  Serial.println("FW LORA_ALT_FIX_20261027_V2 MANUAL_3F ALT_5F");
   Serial.printf("E220: RX=%d TX=%d M0=%d M1=%d AUX=%d, %lu baud 8N1\n",
                 E220_RX, E220_TX, E220_M0, E220_M1, E220_AUX,
                 static_cast<unsigned long>(UART_BAUD));

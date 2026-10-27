@@ -1,6 +1,6 @@
-../Core/Src/mahony.c:8:14:clampIntegral	16	static
-../Core/Src/mahony.c:13:14:invSqrt	16	static
-../Core/Src/mahony.c:17:6:Mahony_Init	16	static
-../Core/Src/mahony.c:34:5:Mahony_InitFromAccel	64	static
-../Core/Src/mahony.c:63:6:Mahony_Update	88	static
-../Core/Src/mahony.c:176:6:Mahony_GetEuler	32	static
+../Core/Src/mahony.c:9:14:clampIntegral	16	static
+../Core/Src/mahony.c:14:14:invSqrt	16	static
+../Core/Src/mahony.c:19:6:Mahony_Init	16	static
+../Core/Src/mahony.c:37:5:Mahony_InitFromAccel	64	static
+../Core/Src/mahony.c:66:6:Mahony_Update	88	static
+../Core/Src/mahony.c:179:6:Mahony_GetEuler	32	static

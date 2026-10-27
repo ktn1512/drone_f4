@@ -1,0 +1,4 @@
+../Core/Src/altitude_hold.c:21:14:clampf	3
+../Core/Src/altitude_hold.c:26:6:AltitudeHold_Reset	2
+../Core/Src/altitude_hold.c:31:9:AltitudeHold_Start	6
+../Core/Src/altitude_hold.c:53:9:AltitudeHold_Update	20

@@ -34,7 +34,8 @@ Core/Src/main.o: ../Core/Src/main.c ../Core/Inc/main.h \
  ../Core/Inc/gps.h ../Core/Inc/mmc5983ma.h ../Core/Inc/angle_controller.h \
  ../Core/Inc/pid.h ../Core/Inc/rate_controller.h ../Core/Inc/mixer.h \
  ../Core/Inc/mahony.h ../Core/Inc/drone_link.h ../Core/Inc/e220.h \
- ../Core/Inc/angle_controller.h ../Core/Inc/rate_controller.h
+ ../Core/Inc/angle_controller.h ../Core/Inc/rate_controller.h \
+ ../Core/Inc/dps310.h ../Core/Inc/altitude_hold.h
 ../Core/Inc/main.h:
 ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal.h:
 ../Core/Inc/stm32f4xx_hal_conf.h:
@@ -81,3 +82,5 @@ Core/Src/main.o: ../Core/Src/main.c ../Core/Inc/main.h \
 ../Core/Inc/e220.h:
 ../Core/Inc/angle_controller.h:
 ../Core/Inc/rate_controller.h:
+../Core/Inc/dps310.h:
+../Core/Inc/altitude_hold.h:

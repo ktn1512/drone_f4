@@ -1,4 +1,6 @@
+"./Core/Src/altitude_hold.o"
 "./Core/Src/angle_controller.o"
+"./Core/Src/dps310.o"
 "./Core/Src/drone_link.o"
 "./Core/Src/dshot.o"
 "./Core/Src/e22.o"
