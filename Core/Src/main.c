@@ -63,6 +63,14 @@
 #define MAG_OFFSET_Y_G 0.328185f
 #define MAG_OFFSET_Z_G 0.0f
 #define RAD_TO_DEG 57.295779513f
+/* DIAG: gyro standing-still check at boot; no change to IMU filter/PID/PWM. */
+#define GYRO_CAL_SAMPLES         500U
+#define GYRO_CAL_DELAY_MS       2U
+#define GYRO_CAL_RETRIES        3U
+#define GYRO_CAL_MAX_STD_DPS    0.75f
+#define GYRO_CAL_MAX_BIAS_DPS   3.0f
+/* Reset gyro-only reference while throttle low; compare only shortly after takeoff power. */
+#define DIAG_GYRO_REFERENCE_THR  1100U
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -136,9 +144,14 @@ float throttle = 1000;
 
 char uart_buf[128];
 
-static char tx_frame[1024];
+static char tx_frame[2048]; /* diagnostic log has an extra IMU_DBG line */
 
 static float pitch_p_term, pitch_i_term, pitch_d_term;
+/* DIAG: attitude reference integrated from gyro only, in a separate quaternion. */
+static Mahony_t gyro_only;
+static float gyro_only_roll_deg, gyro_only_pitch_deg, gyro_only_yaw_deg;
+static uint8_t gyro_only_active;
+static uint32_t gyro_only_start_ms;
 static uint32_t control_dt_fault_count;
 
 /** @brief Cực trị giữa hai lần log; giữ được xung nhiễu ngắn mà telemetry RF bỏ lỡ. */
@@ -150,6 +163,7 @@ static struct {
 	uint32_t max_dt_us;
 	uint32_t limit_hits;
 	float ax_sum, ay_sum, az_sum;
+	float ax_sq_sum, ay_sq_sum, az_sq_sum;
 	float gyro_sum;
 	float accel_norm_min, accel_norm_max;
 	float gyro_min, gyro_max;
@@ -176,6 +190,68 @@ static void MX_USART6_UART_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+/* DIAG: avoid accepting a gyro bias measured while the FC is moving.
+ * This replaces ONLY the boot calibration call; driver and filters are unchanged.
+ * Reject when sample standard deviations are high OR any mean is implausibly large.
+ * Mean limit is conservative for this board, based on observed static bias (~1.2 dps Z).
+ */
+static ICM42670_Status_t Gyro_CalibrateIfStationary(ICM42670_t *dev) {
+	if (dev == NULL)
+		return ICM42670_ERROR;
+	for (uint32_t attempt = 1U; attempt <= GYRO_CAL_RETRIES; ++attempt) {
+		float sx = 0.0f, sy = 0.0f, sz = 0.0f;
+		float sx2 = 0.0f, sy2 = 0.0f, sz2 = 0.0f;
+		ICM42670_Data_t reading;
+		for (uint32_t i = 0U; i < GYRO_CAL_SAMPLES; ++i) {
+			ICM42670_Status_t st = ICM42670_ReadAll(&reading);
+			if (st != ICM42670_OK)
+				return st;
+			float x = reading.gx_dps, y = reading.gy_dps, z = reading.gz_dps;
+			sx += x;
+			sy += y;
+			sz += z;
+			sx2 += x * x;
+			sy2 += y * y;
+			sz2 += z * z;
+			HAL_Delay(GYRO_CAL_DELAY_MS);
+		}
+		const float inv = 1.0f / (float) GYRO_CAL_SAMPLES;
+		const float bx = sx * inv, by = sy * inv, bz = sz * inv;
+		const float std_x = sqrtf(fmaxf(0.0f, sx2 * inv - bx * bx));
+		const float std_y = sqrtf(fmaxf(0.0f, sy2 * inv - by * by));
+		const float std_z = sqrtf(fmaxf(0.0f, sz2 * inv - bz * bz));
+		const uint8_t valid =
+		isfinite(bx) && isfinite(by) && isfinite(bz) &&
+		std_x <= GYRO_CAL_MAX_STD_DPS &&
+		std_y <= GYRO_CAL_MAX_STD_DPS &&
+		std_z <= GYRO_CAL_MAX_STD_DPS &&
+		fabsf(bx) <= GYRO_CAL_MAX_BIAS_DPS &&
+		fabsf(by) <= GYRO_CAL_MAX_BIAS_DPS &&
+		fabsf(bz) <= GYRO_CAL_MAX_BIAS_DPS;
+		char msg[180];
+		int len =
+				snprintf(msg, sizeof(msg),
+						"GYRO_CAL try=%lu bias=%.3f,%.3f,%.3f std=%.3f,%.3f,%.3f ok=%u\r\n",
+						(unsigned long) attempt, bx, by, bz, std_x, std_y,
+						std_z, (unsigned) valid);
+		if (len > 0 && (size_t) len < sizeof(msg)) {
+			(void) HAL_UART_Transmit(&huart1, (uint8_t*) msg, (uint16_t) len,
+					200U);
+		}
+		if (valid) {
+			dev->gyro_bias_x_dps = bx;
+			dev->gyro_bias_y_dps = by;
+			dev->gyro_bias_z_dps = bz;
+			return ICM42670_OK;
+		}
+		HAL_Delay(300U);
+	}
+	/* Never arm with an invalid gyro zero-rate reference. */
+	static const char fail[] = "GYRO_CAL FAILED: keep FC still and restart\r\n";
+	(void) HAL_UART_Transmit(&huart1, (uint8_t*) fail, sizeof(fail) - 1U, 200U);
+	return ICM42670_ERROR;
+}
+
 /** @brief Xóa lịch sử cả hai vòng và các đầu ra, không đổi tư thế Mahony. */
 static void Control_Reset(void) {
 	PID_Reset(&angle_ctrl.roll);
@@ -237,6 +313,9 @@ static void Control_RecordSample(void) {
 		control_window.ax_sum += imu.ax_g;
 		control_window.ay_sum += imu.ay_g;
 		control_window.az_sum += imu.az_g;
+		control_window.ax_sq_sum += imu.ax_g * imu.ax_g;
+		control_window.ay_sq_sum += imu.ay_g * imu.ay_g;
+		control_window.az_sq_sum += imu.az_g * imu.az_g;
 		++control_window.accel_samples;
 	}
 	if (isfinite(imu.gy_dps)) {
@@ -403,7 +482,7 @@ int main(void) {
 		Error_Handler();
 	}
 
-	if (ICM42670_CalibrateGyro(&icm, 500, 2) != ICM42670_OK) {
+	if (Gyro_CalibrateIfStationary(&icm) != ICM42670_OK) {
 		Error_Handler();
 	}
 
@@ -456,6 +535,9 @@ int main(void) {
 		Error_Handler();
 	}
 	Mahony_GetEuler(&mahony, &roll_deg, &pitch_deg, &mahony_yaw_deg);
+	gyro_only = mahony;
+	gyro_only.twoKp = gyro_only.twoKi = 0.0f;
+	gyro_only_start_ms = HAL_GetTick();
 	AngleController_Init(&angle_ctrl);
 	RateController_Init(&rate_ctrl);
 
@@ -538,6 +620,29 @@ int main(void) {
 				imu.ay_g, imu.az_g, dt);
 
 		Mahony_GetEuler(&mahony, &roll_deg, &pitch_deg, &mahony_yaw_deg);
+		/* DIAG: gyro-only quaternion (no accel feedback), completely isolated
+		 * from the controller. While throttle is low, keep it at Mahony's pose.
+		 * Above 1100 us, let it integrate freely. Compare short intervals only.
+		 */
+		if ((uint32_t) DroneLink_Throttle(
+				&drone_link) <= DIAG_GYRO_REFERENCE_THR) {
+			gyro_only = mahony;
+			gyro_only.twoKp = 0.0f;
+			gyro_only.twoKi = 0.0f;
+			gyro_only_active = 0U;
+			gyro_only_start_ms = HAL_GetTick();
+		} else if (!gyro_only_active) {
+			gyro_only = mahony;
+			gyro_only.twoKp = 0.0f;
+			gyro_only.twoKi = 0.0f;
+			gyro_only_active = 1U;
+			gyro_only_start_ms = HAL_GetTick();
+		} else {
+			Mahony_Update(&gyro_only, imu.gx_dps, imu.gy_dps, imu.gz_dps, 0.0f,
+					0.0f, 0.0f, dt);
+		}
+		Mahony_GetEuler(&gyro_only, &gyro_only_roll_deg, &gyro_only_pitch_deg,
+				&gyro_only_yaw_deg);
 		Yaw_IntegrateGyro(imu.gz_dps, dt);
 
 		/*
@@ -551,22 +656,23 @@ int main(void) {
 		 * a new mode=1 request, with valid DPS310 home and fresh samples.
 		 * Do not update barometer PID at IMU 500 Hz.
 		 */
-		const float manual_throttle = (float)DroneLink_Throttle(&drone_link);
+		const float manual_throttle = (float) DroneLink_Throttle(&drone_link);
 		const uint8_t alt_request = drone_link.alt_hold_requested ? 1U : 0U;
 		const uint32_t alt_now_ms = HAL_GetTick();
-		const uint8_t baro_healthy =
-				dps310.home_valid && dps310.valid &&
-				(alt_now_ms - dps310.last_update_ms <= 180U) &&
-				isfinite(dps310.altitude_rel_m);
+		const uint8_t baro_healthy = dps310.home_valid && dps310.valid
+				&& (alt_now_ms - dps310.last_update_ms <= 180U)
+				&& isfinite(dps310.altitude_rel_m);
 
 		if (!alt_request) {
-			if (altitude_hold.active) AltitudeHold_Reset(&altitude_hold);
+			if (altitude_hold.active)
+				AltitudeHold_Reset(&altitude_hold);
 			/* User must switch to MANUAL before re-entering HOLD. */
-			if (manual_throttle <= 1000.0f ||
-			    alt_hold_prev_request) alt_hold_blocked = 0U;
+			if (manual_throttle <= 1000.0f || alt_hold_prev_request)
+				alt_hold_blocked = 0U;
 		} else {
 			if (manual_throttle <= 1000.0f || !baro_healthy) {
-				if (altitude_hold.active) ++alt_hold_faults;
+				if (altitude_hold.active)
+					++alt_hold_faults;
 				AltitudeHold_Reset(&altitude_hold);
 				alt_hold_blocked = 1U;
 			}
@@ -574,18 +680,20 @@ int main(void) {
 				/* Prevent ALT_HOLD engaging on the ground or without
 				 * sufficient manual motor power; verify true flight separately.
 				 */
-				if (baro_healthy && manual_throttle >= 1200.0f &&
-				    dps310.altitude_rel_m >= 0.30f) {
+				if (baro_healthy && manual_throttle >= 1200.0f
+						&& dps310.altitude_rel_m >= 0.30f) {
 					if (!AltitudeHold_Start(&altitude_hold,
-					    dps310.altitude_rel_m, manual_throttle,
-					    dps310.last_update_ms))
+							dps310.altitude_rel_m, manual_throttle,
+							dps310.last_update_ms))
 						alt_hold_blocked = 1U;
-				} else alt_hold_blocked = 1U;
+				} else
+					alt_hold_blocked = 1U;
 			}
 		}
 		alt_hold_prev_request = alt_request;
-		throttle = altitude_hold.active ?
-				altitude_hold.throttle_us : manual_throttle;
+		throttle =
+				altitude_hold.active ?
+						altitude_hold.throttle_us : manual_throttle;
 		if (throttle > 1000.0f) {
 			/* Mặc định: góc P -> tốc độ PI. Giữ nguyên dấu IMU và mixer. */
 			AngleController_Update(&angle_ctrl, 0.0f, 0.0f, roll_deg, pitch_deg,
@@ -640,11 +748,11 @@ int main(void) {
 		uint32_t baro_now_ms = HAL_GetTick();
 		if ((baro_now_ms - last_baro_tick) >= 10U) {
 			last_baro_tick = baro_now_ms;
-			if (DPS310_ReadIfReady(&dps310) == HAL_OK &&
-			    altitude_hold.active && dps310.home_valid) {
-				if (!AltitudeHold_Update(&altitude_hold,
-				    dps310.altitude_rel_m, dps310.last_update_ms,
-				    DroneLink_ClimbCommand(&drone_link))) {
+			if (DPS310_ReadIfReady(&dps310) == HAL_OK && altitude_hold.active
+					&& dps310.home_valid) {
+				if (!AltitudeHold_Update(&altitude_hold, dps310.altitude_rel_m,
+						dps310.last_update_ms,
+						DroneLink_ClimbCommand(&drone_link))) {
 					AltitudeHold_Reset(&altitude_hold);
 					alt_hold_blocked = 1U;
 					++alt_hold_faults;
@@ -662,6 +770,8 @@ int main(void) {
 				&& (huart1.gState == HAL_UART_STATE_READY)) {
 			float mean_ax = NAN, mean_ay = NAN, mean_az = NAN;
 			float pitch_acc = NAN;
+			float roll_acc = NAN;
+			float ax_std = NAN, ay_std = NAN, az_std = NAN;
 			float accel_norm_min = NAN, accel_norm_max = NAN;
 			float mean_gy = NAN;
 			if (control_window.accel_samples > 0U) {
@@ -669,13 +779,28 @@ int main(void) {
 				mean_ax = control_window.ax_sum * inv_samples;
 				mean_ay = control_window.ay_sum * inv_samples;
 				mean_az = control_window.az_sum * inv_samples;
+				ax_std = sqrtf(
+						fmaxf(0.0f,
+								control_window.ax_sq_sum * inv_samples
+										- mean_ax * mean_ax));
+				ay_std = sqrtf(
+						fmaxf(0.0f,
+								control_window.ay_sq_sum * inv_samples
+										- mean_ay * mean_ay));
+				az_std = sqrtf(
+						fmaxf(0.0f,
+								control_window.az_sq_sum * inv_samples
+										- mean_az * mean_az));
 				accel_norm_min = control_window.accel_norm_min;
 				accel_norm_max = control_window.accel_norm_max;
 				if (mean_ax * mean_ax + mean_ay * mean_ay + mean_az * mean_az
-						> 1.0e-12f)
+						> 1.0e-12f) {
+					roll_acc = atan2f(mean_ay, mean_az) * RAD_TO_DEG;
 					pitch_acc = atan2f(-mean_ax,
-							sqrtf(mean_ay * mean_ay + mean_az * mean_az))
-							* 57.2957795f;
+							sqrtf(
+									mean_ay * mean_ay
+											+ mean_az * mean_az)) * RAD_TO_DEG;
+				}
 			}
 			if (control_window.gyro_samples > 0U)
 				mean_gy = control_window.gyro_sum
@@ -691,6 +816,9 @@ int main(void) {
 									" angle_k=%.2f,%.2f,%.3f rate_k=%.2f,%.2f,%.3f\r\n"
 									"IMU a_g=%.3f,%.3f,%.3f norm_g=%.3f,%.3f pitch_acc=%.1f"
 									" gy_avg=%.3f aw=%.2f reduced=%lu an=%lu fbY=%.5f\r\n"
+									"IMU_DBG mah_rp=%.2f,%.2f acc_rp=%.2f,%.2f gyro_rp=%.2f,%.2f"
+									" gyro_xyz=%.2f,%.2f,%.2f ref_ms=%lu"
+									" a_std_g=%.4f,%.4f,%.4f norm_now=%.3f aw_now=%.2f\r\n"
 									"LORA T_RX=%lu P_WR=%lu P_RD=%lu TIMEOUT=%lu BAD=%lu"
 									" RX_BYTE=%lu S_REQ=%lu TX_DMA_START=%lu TX_DMA_DONE=%lu"
 									" TX_BUSY=%lu TX_ERR=%lu UART_ERR=%lu\r\n"
@@ -719,7 +847,14 @@ int main(void) {
 							pitch_acc, mean_gy, mahony.accel_weight,
 							(unsigned long) control_window.accel_reduced,
 							(unsigned long) control_window.accel_samples,
-							mahony.integralFBy,
+							mahony.integralFBy, roll_deg, pitch_deg, roll_acc,
+							pitch_acc, gyro_only_roll_deg, gyro_only_pitch_deg,
+							imu.gx_dps, imu.gy_dps, imu.gz_dps,
+							(unsigned long) (
+									gyro_only_active ?
+											(HAL_GetTick() - gyro_only_start_ms) :
+											0U), ax_std, ay_std, az_std,
+							mahony.accel_norm_g, mahony.accel_weight,
 							(unsigned long) drone_link.throttle_rx_count,
 							(unsigned long) drone_link.pid_write_count,
 							(unsigned long) drone_link.pid_read_count,
@@ -750,12 +885,9 @@ int main(void) {
 							(unsigned) altitude_hold.active,
 							(unsigned) alt_hold_blocked,
 							(int) DroneLink_ClimbCommand(&drone_link),
-							altitude_hold.target_m,
-							dps310.altitude_rel_m,
-							altitude_hold.vz_mps,
-							altitude_hold.vz_setpoint_mps,
-							altitude_hold.trim_us,
-							altitude_hold.integral_us,
+							altitude_hold.target_m, dps310.altitude_rel_m,
+							altitude_hold.vz_mps, altitude_hold.vz_setpoint_mps,
+							altitude_hold.trim_us, altitude_hold.integral_us,
 							altitude_hold.throttle_us,
 							(unsigned long) alt_hold_faults);
 

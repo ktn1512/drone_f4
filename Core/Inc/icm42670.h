@@ -35,11 +35,11 @@ extern SPI_HandleTypeDef hspi1;
 
 #define ICM_GYRO_FS_DPS     2000.0f // Thang gyro ±2000 độ/giây.
 
-#define ICM_ACCEL_FS_G      8.0f // Thang accel ±8g.
+#define ICM_ACCEL_FS_G      16.0f // Thang accel ±16g.
 
 #define ICM_GYRO_LSB_PER_DPS 16.4f // 16,4 LSB/(độ/giây) tại ±2000 dps.
 
-#define ICM_ACCEL_LSB_PER_G  4096.0f // 4096 LSB/g tại ±8g.
+#define ICM_ACCEL_LSB_PER_G  2048.0f // 2048 LSB/g tại ±16g.
 
 typedef enum
 {

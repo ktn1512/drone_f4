@@ -22,7 +22,7 @@ void Mahony_Init(Mahony_t *m) {
 	m->q2 = 0.0f;
 	m->q3 = 0.0f;
 
-	m->twoKp = 2.0f;
+	m->twoKp = 1.0f;
 
 	m->twoKi = 0.0f;
 
