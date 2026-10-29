@@ -63,14 +63,12 @@
 #define MAG_OFFSET_Y_G 0.328185f
 #define MAG_OFFSET_Z_G 0.0f
 #define RAD_TO_DEG 57.295779513f
-/* DIAG: gyro standing-still check at boot; no change to IMU filter/PID/PWM. */
+/* Hiệu chuẩn gyro khi đứng yên trước khi bắt đầu điều khiển. */
 #define GYRO_CAL_SAMPLES         500U
 #define GYRO_CAL_DELAY_MS       2U
 #define GYRO_CAL_RETRIES        3U
 #define GYRO_CAL_MAX_STD_DPS    0.75f
 #define GYRO_CAL_MAX_BIAS_DPS   3.0f
-/* Reset gyro-only reference while throttle low; compare only shortly after takeoff power. */
-#define DIAG_GYRO_REFERENCE_THR  1100U
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -144,32 +142,7 @@ float throttle = 1000;
 
 char uart_buf[128];
 
-static char tx_frame[2048]; /* diagnostic log has an extra IMU_DBG line */
-
-static float pitch_p_term, pitch_i_term, pitch_d_term;
-/* DIAG: attitude reference integrated from gyro only, in a separate quaternion. */
-static Mahony_t gyro_only;
-static float gyro_only_roll_deg, gyro_only_pitch_deg, gyro_only_yaw_deg;
-static uint8_t gyro_only_active;
-static uint32_t gyro_only_start_ms;
-static uint32_t control_dt_fault_count;
-
-/** @brief Cực trị giữa hai lần log; giữ được xung nhiễu ngắn mà telemetry RF bỏ lỡ. */
-static struct {
-	uint32_t samples;
-	uint32_t accel_samples;
-	uint32_t gyro_samples;
-	uint32_t accel_reduced;
-	uint32_t max_dt_us;
-	uint32_t limit_hits;
-	float ax_sum, ay_sum, az_sum;
-	float ax_sq_sum, ay_sq_sum, az_sq_sum;
-	float gyro_sum;
-	float accel_norm_min, accel_norm_max;
-	float gyro_min, gyro_max;
-	float output_min, output_max;
-	float d_abs_max;
-} control_window;
+static char tx_frame[2048];
 
 /* USER CODE END PV */
 
@@ -190,11 +163,7 @@ static void MX_USART6_UART_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-/* DIAG: avoid accepting a gyro bias measured while the FC is moving.
- * This replaces ONLY the boot calibration call; driver and filters are unchanged.
- * Reject when sample standard deviations are high OR any mean is implausibly large.
- * Mean limit is conservative for this board, based on observed static bias (~1.2 dps Z).
- */
+/* Chỉ chấp nhận bias gyro khi FC đứng yên để có mốc tốc độ quay đúng cho điều khiển. */
 static ICM42670_Status_t Gyro_CalibrateIfStationary(ICM42670_t *dev) {
 	if (dev == NULL)
 		return ICM42670_ERROR;
@@ -228,16 +197,6 @@ static ICM42670_Status_t Gyro_CalibrateIfStationary(ICM42670_t *dev) {
 		fabsf(bx) <= GYRO_CAL_MAX_BIAS_DPS &&
 		fabsf(by) <= GYRO_CAL_MAX_BIAS_DPS &&
 		fabsf(bz) <= GYRO_CAL_MAX_BIAS_DPS;
-		char msg[180];
-		int len =
-				snprintf(msg, sizeof(msg),
-						"GYRO_CAL try=%lu bias=%.3f,%.3f,%.3f std=%.3f,%.3f,%.3f ok=%u\r\n",
-						(unsigned long) attempt, bx, by, bz, std_x, std_y,
-						std_z, (unsigned) valid);
-		if (len > 0 && (size_t) len < sizeof(msg)) {
-			(void) HAL_UART_Transmit(&huart1, (uint8_t*) msg, (uint16_t) len,
-					200U);
-		}
 		if (valid) {
 			dev->gyro_bias_x_dps = bx;
 			dev->gyro_bias_y_dps = by;
@@ -247,23 +206,7 @@ static ICM42670_Status_t Gyro_CalibrateIfStationary(ICM42670_t *dev) {
 		HAL_Delay(300U);
 	}
 	/* Never arm with an invalid gyro zero-rate reference. */
-	static const char fail[] = "GYRO_CAL FAILED: keep FC still and restart\r\n";
-	(void) HAL_UART_Transmit(&huart1, (uint8_t*) fail, sizeof(fail) - 1U, 200U);
 	return ICM42670_ERROR;
-}
-
-/** @brief Xóa lịch sử cả hai vòng và các đầu ra, không đổi tư thế Mahony. */
-static void Control_Reset(void) {
-	PID_Reset(&angle_ctrl.roll);
-	PID_Reset(&angle_ctrl.pitch);
-	PID_Reset(&angle_ctrl.yaw);
-	PID_Reset(&rate_ctrl.roll);
-	PID_Reset(&rate_ctrl.pitch);
-	PID_Reset(&rate_ctrl.yaw);
-	roll_rate_sp = pitch_rate_sp = yaw_rate_sp = 0.0f;
-	yaw_target_latched = 0U;
-	roll_pid = pitch_pid = yaw_pid = 0.0f;
-	pitch_p_term = pitch_i_term = pitch_d_term = 0.0f;
 }
 
 /** @brief Ghi bốn lệnh motor theo thứ tự M1..M4. */
@@ -272,65 +215,6 @@ static void Motors_Write(void) {
 	__HAL_TIM_SET_COMPARE(&htim5, TIM_CHANNEL_2, motor.m2);
 	__HAL_TIM_SET_COMPARE(&htim5, TIM_CHANNEL_3, motor.m3);
 	__HAL_TIM_SET_COMPARE(&htim5, TIM_CHANNEL_4, motor.m4);
-}
-
-/** @brief Lỗi IMU/nhịp điều khiển: về ga tối thiểu và bỏ lịch sử PID cũ. */
-static void Control_Stop(void) {
-	DroneLink_SetMinimumThrottle(&drone_link);
-	throttle = (float) DRONE_LINK_MIN_THR;
-	Control_Reset();
-	AltitudeHold_Reset(&altitude_hold);
-	alt_hold_blocked = 1U;
-	motor.m1 = motor.m2 = motor.m3 = motor.m4 = DRONE_LINK_MIN_THR;
-	Motors_Write();
-}
-
-/** @brief Ghi cực trị gyro, D và lệnh pitch thực sự được sử dụng trong cửa sổ log. */
-static void Control_RecordSample(void) {
-	if (control_window.samples == 0U) {
-		control_window.gyro_min = control_window.gyro_max = imu.gy_dps;
-		control_window.output_min = control_window.output_max = pitch_pid;
-	}
-	if (imu.gy_dps < control_window.gyro_min)
-		control_window.gyro_min = imu.gy_dps;
-	if (imu.gy_dps > control_window.gyro_max)
-		control_window.gyro_max = imu.gy_dps;
-	if (pitch_pid < control_window.output_min)
-		control_window.output_min = pitch_pid;
-	if (pitch_pid > control_window.output_max)
-		control_window.output_max = pitch_pid;
-	if (fabsf(pitch_d_term) > control_window.d_abs_max)
-		control_window.d_abs_max = fabsf(pitch_d_term);
-	if (isfinite(imu.ax_g) && isfinite(imu.ay_g) && isfinite(imu.az_g) &&
-	isfinite(mahony.accel_norm_g)) {
-		if (control_window.accel_samples == 0U)
-			control_window.accel_norm_min = control_window.accel_norm_max =
-					mahony.accel_norm_g;
-		if (mahony.accel_norm_g < control_window.accel_norm_min)
-			control_window.accel_norm_min = mahony.accel_norm_g;
-		if (mahony.accel_norm_g > control_window.accel_norm_max)
-			control_window.accel_norm_max = mahony.accel_norm_g;
-		control_window.ax_sum += imu.ax_g;
-		control_window.ay_sum += imu.ay_g;
-		control_window.az_sum += imu.az_g;
-		control_window.ax_sq_sum += imu.ax_g * imu.ax_g;
-		control_window.ay_sq_sum += imu.ay_g * imu.ay_g;
-		control_window.az_sq_sum += imu.az_g * imu.az_g;
-		++control_window.accel_samples;
-	}
-	if (isfinite(imu.gy_dps)) {
-		control_window.gyro_sum += imu.gy_dps;
-		++control_window.gyro_samples;
-	}
-	if (!isfinite(mahony.accel_weight) || mahony.accel_weight < 1.0f)
-		++control_window.accel_reduced;
-	if (throttle > (float) DRONE_LINK_MIN_THR
-			&& (motor.m1 == 1000U || motor.m1 == 1700U || motor.m2 == 1000U
-					|| motor.m2 == 1700U || motor.m3 == 1000U
-					|| motor.m3 == 1700U || motor.m4 == 1000U
-					|| motor.m4 == 1700U))
-		++control_window.limit_hits;
-	++control_window.samples;
 }
 
 /* Chuẩn góc yaw 0..360 và sai số ngắn nhất -180..180 (độ). */
@@ -535,9 +419,6 @@ int main(void) {
 		Error_Handler();
 	}
 	Mahony_GetEuler(&mahony, &roll_deg, &pitch_deg, &mahony_yaw_deg);
-	gyro_only = mahony;
-	gyro_only.twoKp = gyro_only.twoKi = 0.0f;
-	gyro_only_start_ms = HAL_GetTick();
 	AngleController_Init(&angle_ctrl);
 	RateController_Init(&rate_ctrl);
 
@@ -575,21 +456,15 @@ int main(void) {
 
 		last_control_cycles = now_cycles;
 		elapsed_cycles = now_cycles - last_sample_cycles;
-		uint32_t dt_us = elapsed_cycles / control_cycles_per_us;
-		if (dt_us > control_window.max_dt_us)
-			control_window.max_dt_us = dt_us;
 		if (elapsed_cycles > control_cycles_per_us * CONTROL_MAX_DT_US) {
 			/* Không đưa khoảng gián đoạn dài vào cả Mahony lẫn PID. */
-			++control_dt_fault_count;
 			last_sample_cycles = now_cycles;
-			Control_Stop();
 			continue;
 		}
 
 		/* ================= IMU ================= */
 
 		if (ICM42670_ReadAll(&imu) != ICM42670_OK) {
-			Control_Stop();
 			last_control_cycles = last_sample_cycles = DWT->CYCCNT;
 			(void) DroneLink_SendStatus(&drone_link, roll_deg, pitch_deg,
 					yaw_deg, motor.m1, motor.m2, motor.m3, motor.m4);
@@ -600,14 +475,9 @@ int main(void) {
 		uint32_t sample_cycles = DWT->CYCCNT;
 		elapsed_cycles = sample_cycles - last_sample_cycles;
 		last_sample_cycles = sample_cycles;
-		dt_us = elapsed_cycles / control_cycles_per_us;
-		if (dt_us > control_window.max_dt_us)
-			control_window.max_dt_us = dt_us;
 		if (elapsed_cycles < control_cycles_per_us * CONTROL_MIN_DT_US
 				|| elapsed_cycles > control_cycles_per_us * CONTROL_MAX_DT_US) {
-			++control_dt_fault_count;
 			last_control_cycles = sample_cycles;
-			Control_Stop();
 			continue;
 		}
 		float dt = (float) elapsed_cycles / (float) control_clock_hz;
@@ -620,29 +490,6 @@ int main(void) {
 				imu.ay_g, imu.az_g, dt);
 
 		Mahony_GetEuler(&mahony, &roll_deg, &pitch_deg, &mahony_yaw_deg);
-		/* DIAG: gyro-only quaternion (no accel feedback), completely isolated
-		 * from the controller. While throttle is low, keep it at Mahony's pose.
-		 * Above 1100 us, let it integrate freely. Compare short intervals only.
-		 */
-		if ((uint32_t) DroneLink_Throttle(
-				&drone_link) <= DIAG_GYRO_REFERENCE_THR) {
-			gyro_only = mahony;
-			gyro_only.twoKp = 0.0f;
-			gyro_only.twoKi = 0.0f;
-			gyro_only_active = 0U;
-			gyro_only_start_ms = HAL_GetTick();
-		} else if (!gyro_only_active) {
-			gyro_only = mahony;
-			gyro_only.twoKp = 0.0f;
-			gyro_only.twoKi = 0.0f;
-			gyro_only_active = 1U;
-			gyro_only_start_ms = HAL_GetTick();
-		} else {
-			Mahony_Update(&gyro_only, imu.gx_dps, imu.gy_dps, imu.gz_dps, 0.0f,
-					0.0f, 0.0f, dt);
-		}
-		Mahony_GetEuler(&gyro_only, &gyro_only_roll_deg, &gyro_only_pitch_deg,
-				&gyro_only_yaw_deg);
 		Yaw_IntegrateGyro(imu.gz_dps, dt);
 
 		/*
@@ -725,21 +572,12 @@ int main(void) {
 			if (!mag_fresh)
 				yaw_pid = 0.0f;
 
-			pitch_p_term =
-					rate_ctrl.pitch.initialized ?
-							rate_ctrl.pitch.kp * rate_ctrl.pitch.prev_error :
-							0.0f;
-			pitch_i_term = rate_ctrl.pitch.integral;
-			pitch_d_term = -rate_ctrl.pitch.kd
-					* rate_ctrl.pitch.derivative_filtered;
 			Mixer_QuadX(throttle, roll_pid, pitch_pid, yaw_pid, &motor);
 		} else {
 			motor.m1 = motor.m2 = motor.m3 = motor.m4 = 1000U;
-			Control_Reset();
 		}
 
 		Motors_Write();
-		Control_RecordSample();
 		/* Xử lý MMC sau PWM; cập nhật yaw fused cho chu kỳ điều khiển kế. */
 		Mag_Service();
 
@@ -768,57 +606,10 @@ int main(void) {
 		uint32_t log_now = HAL_GetTick();
 		if ((log_now - last_log_tick >= 500U)
 				&& (huart1.gState == HAL_UART_STATE_READY)) {
-			float mean_ax = NAN, mean_ay = NAN, mean_az = NAN;
-			float pitch_acc = NAN;
-			float roll_acc = NAN;
-			float ax_std = NAN, ay_std = NAN, az_std = NAN;
-			float accel_norm_min = NAN, accel_norm_max = NAN;
-			float mean_gy = NAN;
-			if (control_window.accel_samples > 0U) {
-				float inv_samples = 1.0f / (float) control_window.accel_samples;
-				mean_ax = control_window.ax_sum * inv_samples;
-				mean_ay = control_window.ay_sum * inv_samples;
-				mean_az = control_window.az_sum * inv_samples;
-				ax_std = sqrtf(
-						fmaxf(0.0f,
-								control_window.ax_sq_sum * inv_samples
-										- mean_ax * mean_ax));
-				ay_std = sqrtf(
-						fmaxf(0.0f,
-								control_window.ay_sq_sum * inv_samples
-										- mean_ay * mean_ay));
-				az_std = sqrtf(
-						fmaxf(0.0f,
-								control_window.az_sq_sum * inv_samples
-										- mean_az * mean_az));
-				accel_norm_min = control_window.accel_norm_min;
-				accel_norm_max = control_window.accel_norm_max;
-				if (mean_ax * mean_ax + mean_ay * mean_ay + mean_az * mean_az
-						> 1.0e-12f) {
-					roll_acc = atan2f(mean_ay, mean_az) * RAD_TO_DEG;
-					pitch_acc = atan2f(-mean_ax,
-							sqrtf(
-									mean_ay * mean_ay
-											+ mean_az * mean_az)) * RAD_TO_DEG;
-				}
-			}
-			if (control_window.gyro_samples > 0U)
-				mean_gy = control_window.gyro_sum
-						/ (float) control_window.gyro_samples;
-
 			/** @brief Số ký tự snprintf cần ghi, không tính NUL; chỉ gửi khi bộ đệm đủ chỗ. */
 			int len =
 					snprintf(tx_frame, sizeof(tx_frame),
 							"thr=%u angle=%.1f,%.1f,%.1f pid=%.1f,%.1f m=%u,%u,%u,%u\r\n"
-									"CTRL dt_us=%lu max_us=%lu dt_bad=%lu n=%lu lim=%lu"
-									" gy=%.1f sp=%.1f P=%.1f I=%.1f D=%.1f"
-									" gy_rng=%.1f,%.1f out_rng=%.1f,%.1f Dmax=%.1f"
-									" angle_k=%.2f,%.2f,%.3f rate_k=%.2f,%.2f,%.3f\r\n"
-									"IMU a_g=%.3f,%.3f,%.3f norm_g=%.3f,%.3f pitch_acc=%.1f"
-									" gy_avg=%.3f aw=%.2f reduced=%lu an=%lu fbY=%.5f\r\n"
-									"IMU_DBG mah_rp=%.2f,%.2f acc_rp=%.2f,%.2f gyro_rp=%.2f,%.2f"
-									" gyro_xyz=%.2f,%.2f,%.2f ref_ms=%lu"
-									" a_std_g=%.4f,%.4f,%.4f norm_now=%.3f aw_now=%.2f\r\n"
 									"LORA T_RX=%lu P_WR=%lu P_RD=%lu TIMEOUT=%lu BAD=%lu"
 									" RX_BYTE=%lu S_REQ=%lu TX_DMA_START=%lu TX_DMA_DONE=%lu"
 									" TX_BUSY=%lu TX_ERR=%lu UART_ERR=%lu\r\n"
@@ -831,30 +622,6 @@ int main(void) {
 							roll_deg, pitch_deg, yaw_deg, roll_pid, pitch_pid,
 							(unsigned) motor.m1, (unsigned) motor.m2,
 							(unsigned) motor.m3, (unsigned) motor.m4,
-							(unsigned long) dt_us,
-							(unsigned long) control_window.max_dt_us,
-							(unsigned long) control_dt_fault_count,
-							(unsigned long) control_window.samples,
-							(unsigned long) control_window.limit_hits,
-							imu.gy_dps, pitch_rate_sp, pitch_p_term,
-							pitch_i_term, pitch_d_term, control_window.gyro_min,
-							control_window.gyro_max, control_window.output_min,
-							control_window.output_max, control_window.d_abs_max,
-							angle_ctrl.pitch.kp, angle_ctrl.pitch.ki,
-							angle_ctrl.pitch.kd, rate_ctrl.pitch.kp,
-							rate_ctrl.pitch.ki, rate_ctrl.pitch.kd, mean_ax,
-							mean_ay, mean_az, accel_norm_min, accel_norm_max,
-							pitch_acc, mean_gy, mahony.accel_weight,
-							(unsigned long) control_window.accel_reduced,
-							(unsigned long) control_window.accel_samples,
-							mahony.integralFBy, roll_deg, pitch_deg, roll_acc,
-							pitch_acc, gyro_only_roll_deg, gyro_only_pitch_deg,
-							imu.gx_dps, imu.gy_dps, imu.gz_dps,
-							(unsigned long) (
-									gyro_only_active ?
-											(HAL_GetTick() - gyro_only_start_ms) :
-											0U), ax_std, ay_std, az_std,
-							mahony.accel_norm_g, mahony.accel_weight,
 							(unsigned long) drone_link.throttle_rx_count,
 							(unsigned long) drone_link.pid_write_count,
 							(unsigned long) drone_link.pid_read_count,
@@ -895,7 +662,6 @@ int main(void) {
 				if (HAL_UART_Transmit_IT(&huart1, (uint8_t*) tx_frame,
 						(uint16_t) len) == HAL_OK) {
 					last_log_tick = log_now;
-					memset(&control_window, 0, sizeof(control_window));
 				}
 			}
 		}
