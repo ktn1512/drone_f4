@@ -151,7 +151,7 @@ static bool handle_line(DroneLink_t *l, char *line) {
                      (unsigned long)seq, (unsigned long)id);
         }
     }
-    l->status_pending = false;
+    /* Do not drop an outstanding S response when P/G arrives. */
     set_reply(l, reply);
     return true;
 }
@@ -186,6 +186,7 @@ int16_t DroneLink_ClimbCommand(const DroneLink_t *l) {
 }
 
 void DroneLink_Poll(DroneLink_t *l) {
+    E220_Service(l->radio);
     if ((uint32_t)(HAL_GetTick() - l->last_throttle_ms) > DRONE_LINK_TIMEOUT_MS &&
         l->throttle_us != DRONE_LINK_MIN_THR) {
         ++l->throttle_timeout_count;

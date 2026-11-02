@@ -23,9 +23,19 @@ typedef struct {
     volatile uint32_t rx_total_count;
     volatile uint32_t uart_error_count;
     volatile HAL_StatusTypeDef rx_status;
+    /* Recovery state: callbacks are interrupt context; repair runs in E220_Service. */
+    volatile uint8_t rx_rearm_pending;
+    volatile uint32_t rx_rearm_since_ms;
+    volatile uint32_t rx_retry_last_ms;
+    volatile uint32_t rx_rearm_fail_count;
+    volatile uint32_t rx_restart_count;
+    volatile uint32_t rx_restart_fail_count;
+    volatile uint32_t last_uart_error;
 
     uint8_t tx_dma_buffer[E220_MAX_PACKET_SIZE];
     volatile uint8_t tx_active;
+    volatile uint32_t tx_begin_ms;
+    volatile uint32_t tx_stall_recover_count;
     volatile uint32_t tx_start_count;
     volatile uint32_t tx_done_count;
     volatile uint32_t tx_busy_count;
@@ -49,6 +59,8 @@ void E220_RxCallback(E220_t *e220);
 void E220_TxCpltCallback(E220_t *e220);
 
 void E220_ErrorCallback(E220_t *e220);
+/* Call frequently from main loop, NOT from UART ISR. */
+void E220_Service(E220_t *e220);
 
 uint16_t E220_Available(E220_t *e220);
 

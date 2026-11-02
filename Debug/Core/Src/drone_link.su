@@ -12,4 +12,4 @@
 ../Core/Src/drone_link.c:175:10:DroneLink_Throttle	16	static
 ../Core/Src/drone_link.c:181:9:DroneLink_ClimbCommand	16	static
 ../Core/Src/drone_link.c:188:6:DroneLink_Poll	24	static
-../Core/Src/drone_link.c:220:6:DroneLink_SendStatus	256	static
+../Core/Src/drone_link.c:221:6:DroneLink_SendStatus	256	static

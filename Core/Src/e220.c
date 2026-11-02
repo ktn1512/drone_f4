@@ -35,6 +35,7 @@ HAL_StatusTypeDef E220_Send_DMA(E220_t *e, const uint8_t *data, uint16_t len) {
     }
 
     e->tx_active = 1U;
+    e->tx_begin_ms = HAL_GetTick();
     memcpy(e->tx_dma_buffer, data, len);
     HAL_StatusTypeDef rc = HAL_UART_Transmit_DMA(e->huart, e->tx_dma_buffer, len);
     if (rc == HAL_OK) {
@@ -88,21 +89,69 @@ void E220_RxCallback(E220_t *e) {
         ++e->rx_overflow_count;
     }
     e->rx_status = HAL_UART_Receive_IT(e->huart, &e->rx_byte, 1U);
+    if (e->rx_status != HAL_OK) {
+        ++e->rx_rearm_fail_count;
+        e->rx_rearm_pending = 1U;
+        e->rx_rearm_since_ms = HAL_GetTick();
+    } else {
+        e->rx_rearm_pending = 0U;
+    }
 }
 
-/* Tăng bộ đếm lỗi, abort và restart RX. */
+/* ISR: record error only. Do not perform blocking abort/re-init inside IRQ. */
 void E220_ErrorCallback(E220_t *e) {
     if (!valid_handle(e)) return;
     ++e->uart_error_count;
-
+    e->last_uart_error = HAL_UART_GetError(e->huart);
+    if (!e->rx_rearm_pending) e->rx_rearm_since_ms = HAL_GetTick();
+    e->rx_rearm_pending = 1U;
     if (e->huart->gState == HAL_UART_STATE_READY && e->tx_active) {
-
         e->tx_active = 0U;
         ++e->tx_error_count;
     }
-    e->rx_status = HAL_UART_AbortReceive(e->huart);
-    if (e->rx_status == HAL_OK)
-        e->rx_status = HAL_UART_Receive_IT(e->huart, &e->rx_byte, 1U);
+}
+
+/* UART recovery from foreground. The 700-ms threshold is for the UART
+ * DMA transfer, NOT for radio-air delivery; keep M0/M1 in normal mode. */
+void E220_Service(E220_t *e) {
+    if (!valid_handle(e)) return;
+    uint32_t now = HAL_GetTick();
+
+    if (e->tx_active && (uint32_t)(now - e->tx_begin_ms) > 700U) {
+        HAL_StatusTypeDef rc = HAL_UART_AbortTransmit(e->huart);
+        if (rc == HAL_OK && e->huart->gState == HAL_UART_STATE_READY) {
+            e->tx_active = 0U;
+            ++e->tx_stall_recover_count;
+            ++e->tx_error_count;
+        }
+    }
+
+    /* Normal state after HAL_UART_Receive_IT is BUSY_RX. If it silently
+     * becomes READY, there is no active one-byte receive request. */
+    if (!e->rx_rearm_pending && e->huart->RxState == HAL_UART_STATE_READY) {
+        e->rx_rearm_pending = 1U;
+        e->rx_rearm_since_ms = now;
+    }
+    if (!e->rx_rearm_pending) return;
+    if ((uint32_t)(now - e->rx_retry_last_ms) < 25U) return;
+    e->rx_retry_last_ms = now;
+
+    /* Allow HAL error processing to finish before aborting stale RX state. */
+    if (e->huart->RxState != HAL_UART_STATE_READY) {
+        if ((uint32_t)(now - e->rx_rearm_since_ms) < 60U) return;
+        if (HAL_UART_AbortReceive(e->huart) != HAL_OK) {
+            ++e->rx_restart_fail_count;
+            return;
+        }
+    }
+    if (e->huart->RxState != HAL_UART_STATE_READY) return;
+    e->rx_status = HAL_UART_Receive_IT(e->huart, &e->rx_byte, 1U);
+    if (e->rx_status == HAL_OK) {
+        e->rx_rearm_pending = 0U;
+        ++e->rx_restart_count;
+    } else {
+        ++e->rx_restart_fail_count;
+    }
 }
 
 uint16_t E220_Available(E220_t *e) {

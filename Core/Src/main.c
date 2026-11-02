@@ -612,7 +612,7 @@ int main(void) {
 							"thr=%u angle=%.1f,%.1f,%.1f pid=%.1f,%.1f m=%u,%u,%u,%u\r\n"
 									"LORA T_RX=%lu P_WR=%lu P_RD=%lu TIMEOUT=%lu BAD=%lu"
 									" RX_BYTE=%lu S_REQ=%lu TX_DMA_START=%lu TX_DMA_DONE=%lu"
-									" TX_BUSY=%lu TX_ERR=%lu UART_ERR=%lu\r\n"
+									" TX_BUSY=%lu TX_ERR=%lu UART_ERR=%lu LINK_TX_BUSY=%lu LINK_TX_FAIL=%lu RX_FIFO_OVF=%lu RX_RESTART=%lu RX_RESTART_ERR=%lu RX_IT_FAIL=%lu TX_STALL=%lu UART_LAST=0x%lX\r\n"
 									"YAW fused=%.1f mag=%.1f raw_heading=%.1f target=%.1f"
 									" e=%.1f rate_sp=%.1f gz=%.1f out=%.1f"
 									" mag_age=%lu ok=%lu err=%lu reject=%lu hold=%u\r\n"
@@ -633,7 +633,15 @@ int main(void) {
 							(unsigned long) lora.tx_done_count,
 							(unsigned long) lora.tx_busy_count,
 							(unsigned long) lora.tx_error_count,
-							(unsigned long) lora.uart_error_count, yaw_deg,
+							(unsigned long) lora.uart_error_count,
+							(unsigned long) drone_link.tx_busy_count,
+							(unsigned long) drone_link.tx_failed_count,
+							(unsigned long) lora.rx_overflow_count,
+							(unsigned long) lora.rx_restart_count,
+							(unsigned long) lora.rx_restart_fail_count,
+							(unsigned long) lora.rx_rearm_fail_count,
+							(unsigned long) lora.tx_stall_recover_count,
+							(unsigned long) lora.last_uart_error, yaw_deg,
 							mag_yaw_deg, mag_heading_deg, yaw_target_deg,
 							Yaw_Wrap180(yaw_target_deg - yaw_deg), yaw_rate_sp,
 							imu.gz_dps, yaw_pid,
