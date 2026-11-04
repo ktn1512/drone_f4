@@ -64,11 +64,11 @@
 #define MAG_OFFSET_Z_G 0.0f
 #define RAD_TO_DEG 57.295779513f
 /* Hiệu chuẩn gyro khi đứng yên trước khi bắt đầu điều khiển. */
-#define GYRO_CAL_SAMPLES         500U
-#define GYRO_CAL_DELAY_MS       2U
-#define GYRO_CAL_RETRIES        3U
-#define GYRO_CAL_MAX_STD_DPS    0.75f
-#define GYRO_CAL_MAX_BIAS_DPS   3.0f
+#define GYRO_CAL_SAMPLES 500U
+#define GYRO_CAL_DELAY_MS 2U
+#define GYRO_CAL_RETRIES 3U
+#define GYRO_CAL_MAX_STD_DPS 0.75f
+#define GYRO_CAL_MAX_BIAS_DPS 3.0f
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -113,6 +113,14 @@ AltitudeHold_t altitude_hold;
 static uint8_t alt_hold_blocked = 0U;
 static uint8_t alt_hold_prev_request = 0U;
 static uint32_t alt_hold_faults = 0U;
+/* PS4 mode 2 uses a separate takeoff stage before the existing altitude PID.
+ * No ESC/PWM/mixer configuration is changed. */
+static float ps4_takeoff_us = 1000.0f;
+static uint8_t ps4_auto_was_requested = 0U;
+static uint8_t ps4_alt_fault_latched = 0U;
+#define PS4_TAKEOFF_RAMP_US_PER_S 90.0f
+#define PS4_TAKEOFF_MAX_US 1450.0f
+#define PS4_TAKEOFF_MIN_LIFT_M 0.30f
 
 /*Bộ lọc mahony*/
 Mahony_t mahony;
@@ -125,10 +133,10 @@ MotorMixer_t motor;
 
 DroneLink_t drone_link;
 float roll_deg, pitch_deg, yaw_deg;
-float mahony_yaw_deg; /* Chỉ debug, yaw điều khiển lấy MMC + gyro */
+float mahony_yaw_deg;  /* Chỉ debug, yaw điều khiển lấy MMC + gyro */
 float mag_heading_deg; /* Heading MMC theo atan2(+Y, +X), 0..360 */
-float mag_yaw_deg; /* Heading MMC đã đổi dấu theo yaw gyro */
-float yaw_target_deg; /* Chốt khi chuyển ga 1000 -> >1000 */
+float mag_yaw_deg;	   /* Heading MMC đã đổi dấu theo yaw gyro */
+float yaw_target_deg;  /* Chốt khi chuyển ga 1000 -> >1000 */
 float roll_rate_sp, pitch_rate_sp, yaw_rate_sp;
 static uint8_t yaw_estimate_valid;
 static uint8_t yaw_target_latched;
@@ -164,14 +172,17 @@ static void MX_USART6_UART_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 /* Chỉ chấp nhận bias gyro khi FC đứng yên để có mốc tốc độ quay đúng cho điều khiển. */
-static ICM42670_Status_t Gyro_CalibrateIfStationary(ICM42670_t *dev) {
+static ICM42670_Status_t Gyro_CalibrateIfStationary(ICM42670_t *dev)
+{
 	if (dev == NULL)
 		return ICM42670_ERROR;
-	for (uint32_t attempt = 1U; attempt <= GYRO_CAL_RETRIES; ++attempt) {
+	for (uint32_t attempt = 1U; attempt <= GYRO_CAL_RETRIES; ++attempt)
+	{
 		float sx = 0.0f, sy = 0.0f, sz = 0.0f;
 		float sx2 = 0.0f, sy2 = 0.0f, sz2 = 0.0f;
 		ICM42670_Data_t reading;
-		for (uint32_t i = 0U; i < GYRO_CAL_SAMPLES; ++i) {
+		for (uint32_t i = 0U; i < GYRO_CAL_SAMPLES; ++i)
+		{
 			ICM42670_Status_t st = ICM42670_ReadAll(&reading);
 			if (st != ICM42670_OK)
 				return st;
@@ -184,20 +195,21 @@ static ICM42670_Status_t Gyro_CalibrateIfStationary(ICM42670_t *dev) {
 			sz2 += z * z;
 			HAL_Delay(GYRO_CAL_DELAY_MS);
 		}
-		const float inv = 1.0f / (float) GYRO_CAL_SAMPLES;
+		const float inv = 1.0f / (float)GYRO_CAL_SAMPLES;
 		const float bx = sx * inv, by = sy * inv, bz = sz * inv;
 		const float std_x = sqrtf(fmaxf(0.0f, sx2 * inv - bx * bx));
 		const float std_y = sqrtf(fmaxf(0.0f, sy2 * inv - by * by));
 		const float std_z = sqrtf(fmaxf(0.0f, sz2 * inv - bz * bz));
 		const uint8_t valid =
-		isfinite(bx) && isfinite(by) && isfinite(bz) &&
-		std_x <= GYRO_CAL_MAX_STD_DPS &&
-		std_y <= GYRO_CAL_MAX_STD_DPS &&
-		std_z <= GYRO_CAL_MAX_STD_DPS &&
-		fabsf(bx) <= GYRO_CAL_MAX_BIAS_DPS &&
-		fabsf(by) <= GYRO_CAL_MAX_BIAS_DPS &&
-		fabsf(bz) <= GYRO_CAL_MAX_BIAS_DPS;
-		if (valid) {
+			isfinite(bx) && isfinite(by) && isfinite(bz) &&
+			std_x <= GYRO_CAL_MAX_STD_DPS &&
+			std_y <= GYRO_CAL_MAX_STD_DPS &&
+			std_z <= GYRO_CAL_MAX_STD_DPS &&
+			fabsf(bx) <= GYRO_CAL_MAX_BIAS_DPS &&
+			fabsf(by) <= GYRO_CAL_MAX_BIAS_DPS &&
+			fabsf(bz) <= GYRO_CAL_MAX_BIAS_DPS;
+		if (valid)
+		{
 			dev->gyro_bias_x_dps = bx;
 			dev->gyro_bias_y_dps = by;
 			dev->gyro_bias_z_dps = bz;
@@ -210,7 +222,8 @@ static ICM42670_Status_t Gyro_CalibrateIfStationary(ICM42670_t *dev) {
 }
 
 /** @brief Ghi bốn lệnh motor theo thứ tự M1..M4. */
-static void Motors_Write(void) {
+static void Motors_Write(void)
+{
 	__HAL_TIM_SET_COMPARE(&htim5, TIM_CHANNEL_1, motor.m1);
 	__HAL_TIM_SET_COMPARE(&htim5, TIM_CHANNEL_2, motor.m2);
 	__HAL_TIM_SET_COMPARE(&htim5, TIM_CHANNEL_3, motor.m3);
@@ -218,17 +231,21 @@ static void Motors_Write(void) {
 }
 
 /* Chuẩn góc yaw 0..360 và sai số ngắn nhất -180..180 (độ). */
-static float Yaw_Wrap360(float deg) {
+static float Yaw_Wrap360(float deg)
+{
 	deg = fmodf(deg, 360.0f);
 	return (deg < 0.0f) ? deg + 360.0f : deg;
 }
-static float Yaw_Wrap180(float deg) {
+static float Yaw_Wrap180(float deg)
+{
 	return Yaw_Wrap360(deg + 180.0f) - 180.0f;
 }
 
 /* Gọi ở 500 Hz: gyro cung cấp biến thiên nhanh, MMC neo heading dài hạn. */
-static void Yaw_IntegrateGyro(float gyro_z_dps, float dt) {
-	if (yaw_estimate_valid && isfinite(gyro_z_dps) && isfinite(dt)) {
+static void Yaw_IntegrateGyro(float gyro_z_dps, float dt)
+{
+	if (yaw_estimate_valid && isfinite(gyro_z_dps) && isfinite(dt))
+	{
 		yaw_deg = Yaw_Wrap360(yaw_deg + gyro_z_dps * dt);
 	}
 }
@@ -236,16 +253,21 @@ static void Yaw_IntegrateGyro(float gyro_z_dps, float dt) {
 /* Đọc MMC ở tần số thấp, KHÔNG poll chờ/HAL_Delay bên trong.
  * Chỉ đúng công thức khi trục X/Y/Z MMC cùng chiều trục X/Y/Z IMU.
  * Nếu lắp xoay khác chiều, cần hoán đổi/đổi dấu trục trước khi bù nghiêng. */
-static void Mag_Service(void) {
+static void Mag_Service(void)
+{
 	uint32_t now = HAL_GetTick();
-	if (!mag_pending) {
-		if ((int32_t) (now - mag_next_tick) < 0)
+	if (!mag_pending)
+	{
+		if ((int32_t)(now - mag_next_tick) < 0)
 			return;
 		mmc_status = MMC5983_StartMeasurement(&mmc);
-		if (mmc_status == HAL_OK) {
+		if (mmc_status == HAL_OK)
+		{
 			mag_pending = 1U;
 			mag_start_tick = now;
-		} else {
+		}
+		else
+		{
 			++mag_error_count;
 			mag_next_tick = now + MAG_PERIOD_MS;
 		}
@@ -258,7 +280,8 @@ static void Mag_Service(void) {
 		return;
 	mag_pending = 0U;
 	mag_next_tick = now + MAG_PERIOD_MS;
-	if (mmc_status != HAL_OK) {
+	if (mmc_status != HAL_OK)
+	{
 		++mag_error_count;
 		return;
 	}
@@ -269,7 +292,8 @@ static void Mag_Service(void) {
 	float norm2 = bx * bx + by * by + bz * bz;
 	/* Đánh giá sơ bộ độ lớn từ trường: chưa thay thế hiệu chuẩn chính xác. */
 	if (!isfinite(norm2) || norm2 < 0.01f || norm2 > 4.0f ||
-	!isfinite(roll_deg) || !isfinite(pitch_deg)) {
+		!isfinite(roll_deg) || !isfinite(pitch_deg))
+	{
 		++mag_rejected_count;
 		return;
 	}
@@ -280,7 +304,8 @@ static void Mag_Service(void) {
 	/* Bù roll/pitch theo Euler ZYX. */
 	float hx = bx * cp + by * sr * sp + bz * cr * sp;
 	float hy = by * cr - bz * sr;
-	if (!isfinite(hx) || !isfinite(hy) || hx * hx + hy * hy < 0.001f) {
+	if (!isfinite(hx) || !isfinite(hy) || hx * hx + hy * hy < 0.001f)
+	{
 		++mag_rejected_count;
 		return;
 	}
@@ -288,14 +313,18 @@ static void Mag_Service(void) {
 	/* Khi quay thân +yaw (gyro Z dương), vector địa từ trên MMC quay -yaw.
 	 Đổi dấu để yaw từ MMC CÙNG CHIỀU với yaw gyro/Mahony. */
 	mag_yaw_deg = Yaw_Wrap360(-mag_heading_deg);
-	if (!yaw_estimate_valid || (now - mag_last_good_tick) > 1000U) {
+	if (!yaw_estimate_valid || (now - mag_last_good_tick) > 1000U)
+	{
 		/* Sau khởi động/mất MMC lâu: lấy lại mốc heading, không PID vào mốc cũ. */
 		yaw_deg = mag_yaw_deg;
 		yaw_estimate_valid = 1U;
 		yaw_target_latched = 0U;
-	} else {
+	}
+	else
+	{
 		float delta = Yaw_Wrap180(mag_yaw_deg - yaw_deg);
-		if (fabsf(delta) > MAG_MAX_JUMP_DEG) {
+		if (fabsf(delta) > MAG_MAX_JUMP_DEG)
+		{
 			++mag_rejected_count;
 			return;
 		}
@@ -311,7 +340,8 @@ static void Mag_Service(void) {
  * @brief  The application entry point.
  * @retval int
  */
-int main(void) {
+int main(void)
+{
 
 	/* USER CODE BEGIN 1 */
 
@@ -349,30 +379,34 @@ int main(void) {
 	HAL_Delay(20U);
 	mmc.hi2c = &hi2c1;
 	mmc_status = MMC5983_Init(&mmc);
-	if (mmc_status != HAL_OK) {
+	if (mmc_status != HAL_OK)
+	{
 		snprintf(uart_buf, sizeof(uart_buf),
-				"MMC INIT FAILED I2C_ERR=0x%08lX\r\n",
-				(unsigned long) HAL_I2C_GetError(&hi2c1));
-		HAL_UART_Transmit(&huart1, (uint8_t*) uart_buf,
-				(uint16_t) strlen(uart_buf), 100U);
+				 "MMC INIT FAILED I2C_ERR=0x%08lX\r\n",
+				 (unsigned long)HAL_I2C_GetError(&hi2c1));
+		HAL_UART_Transmit(&huart1, (uint8_t *)uart_buf,
+						  (uint16_t)strlen(uart_buf), 100U);
 		Error_Handler();
 	}
 	mag_next_tick = HAL_GetTick();
 
-	if (ICM42670_Init(&icm) != ICM42670_OK) {
+	if (ICM42670_Init(&icm) != ICM42670_OK)
+	{
 		sprintf(uart_buf, "ICM init err\r\n");
-		HAL_UART_Transmit(&huart1, (uint8_t*) uart_buf, strlen(uart_buf),
-		HAL_MAX_DELAY);
+		HAL_UART_Transmit(&huart1, (uint8_t *)uart_buf, strlen(uart_buf),
+						  HAL_MAX_DELAY);
 		Error_Handler();
 	}
 
-	if (Gyro_CalibrateIfStationary(&icm) != ICM42670_OK) {
+	if (Gyro_CalibrateIfStationary(&icm) != ICM42670_OK)
+	{
 		Error_Handler();
 	}
 
 	if (DPS310_Init(&dps310, &hspi2,
-	GPIOB,
-	GPIO_PIN_12) != HAL_OK) {
+					GPIOB,
+					GPIO_PIN_12) != HAL_OK)
+	{
 		Error_Handler();
 	}
 
@@ -388,14 +422,16 @@ int main(void) {
 
 	uint32_t baro_cal_start = HAL_GetTick();
 
-	while ((HAL_GetTick() - baro_cal_start) < 4000U) {
+	while ((HAL_GetTick() - baro_cal_start) < 4000U)
+	{
 		DPS310_ReadIfReady(&dps310);
 		HAL_Delay(5U);
 	}
 
-	if (!dps310.home_valid) {
-		HAL_UART_Transmit(&huart1, (uint8_t*) "DPS310 CAL ERROR\r\n",
-				sizeof("DPS310 CAL ERROR\r\n") - 1U, 100U);
+	if (!dps310.home_valid)
+	{
+		HAL_UART_Transmit(&huart1, (uint8_t *)"DPS310 CAL ERROR\r\n",
+						  sizeof("DPS310 CAL ERROR\r\n") - 1U, 100U);
 
 		Error_Handler();
 	}
@@ -405,8 +441,10 @@ int main(void) {
 	float ay_sum = 0.0f;
 	float az_sum = 0.0f;
 
-	for (uint16_t i = 0U; i < tilt_samples; ++i) {
-		if (ICM42670_ReadAll(&imu) != ICM42670_OK) {
+	for (uint16_t i = 0U; i < tilt_samples; ++i)
+	{
+		if (ICM42670_ReadAll(&imu) != ICM42670_OK)
+		{
 			Error_Handler();
 		}
 		ax_sum += imu.ax_g;
@@ -415,14 +453,16 @@ int main(void) {
 		HAL_Delay(2U);
 	}
 	if (!Mahony_InitFromAccel(&mahony, ax_sum / tilt_samples,
-			ay_sum / tilt_samples, az_sum / tilt_samples)) {
+							  ay_sum / tilt_samples, az_sum / tilt_samples))
+	{
 		Error_Handler();
 	}
 	Mahony_GetEuler(&mahony, &roll_deg, &pitch_deg, &mahony_yaw_deg);
 	AngleController_Init(&angle_ctrl);
 	RateController_Init(&rate_ctrl);
 
-	if (E220_Init(&lora, &huart6) != HAL_OK) {
+	if (E220_Init(&lora, &huart6) != HAL_OK)
+	{
 		Error_Handler();
 	}
 
@@ -445,18 +485,21 @@ int main(void) {
 
 	/* Infinite loop */
 	/* USER CODE BEGIN WHILE */
-	while (1) {
+	while (1)
+	{
 		DroneLink_Poll(&drone_link);
 
 		uint32_t now_cycles = DWT->CYCCNT;
 		uint32_t elapsed_cycles = now_cycles - last_control_cycles;
-		if (elapsed_cycles < control_period_cycles) {
+		if (elapsed_cycles < control_period_cycles)
+		{
 			continue;
 		}
 
 		last_control_cycles = now_cycles;
 		elapsed_cycles = now_cycles - last_sample_cycles;
-		if (elapsed_cycles > control_cycles_per_us * CONTROL_MAX_DT_US) {
+		if (elapsed_cycles > control_cycles_per_us * CONTROL_MAX_DT_US)
+		{
 			/* Không đưa khoảng gián đoạn dài vào cả Mahony lẫn PID. */
 			last_sample_cycles = now_cycles;
 			continue;
@@ -464,10 +507,13 @@ int main(void) {
 
 		/* ================= IMU ================= */
 
-		if (ICM42670_ReadAll(&imu) != ICM42670_OK) {
+		if (ICM42670_ReadAll(&imu) != ICM42670_OK)
+		{
 			last_control_cycles = last_sample_cycles = DWT->CYCCNT;
-			(void) DroneLink_SendStatus(&drone_link, roll_deg, pitch_deg,
-					yaw_deg, motor.m1, motor.m2, motor.m3, motor.m4);
+			(void)DroneLink_SendStatus(&drone_link, roll_deg, pitch_deg,
+									   yaw_deg, motor.m1, motor.m2, motor.m3, motor.m4,
+									   altitude_hold.active,
+									   isfinite(dps310.altitude_rel_m) ? dps310.altitude_rel_m : 0.0f);
 			continue;
 		}
 
@@ -475,19 +521,19 @@ int main(void) {
 		uint32_t sample_cycles = DWT->CYCCNT;
 		elapsed_cycles = sample_cycles - last_sample_cycles;
 		last_sample_cycles = sample_cycles;
-		if (elapsed_cycles < control_cycles_per_us * CONTROL_MIN_DT_US
-				|| elapsed_cycles > control_cycles_per_us * CONTROL_MAX_DT_US) {
+		if (elapsed_cycles < control_cycles_per_us * CONTROL_MIN_DT_US || elapsed_cycles > control_cycles_per_us * CONTROL_MAX_DT_US)
+		{
 			last_control_cycles = sample_cycles;
 			continue;
 		}
-		float dt = (float) elapsed_cycles / (float) control_clock_hz;
+		float dt = (float)elapsed_cycles / (float)control_clock_hz;
 
 		ICM42670_ApplyCalibration(&icm, &imu);
 
 		/* ================= MAHONY ================= */
 
 		Mahony_Update(&mahony, imu.gx_dps, imu.gy_dps, imu.gz_dps, imu.ax_g,
-				imu.ay_g, imu.az_g, dt);
+					  imu.ay_g, imu.az_g, dt);
 
 		Mahony_GetEuler(&mahony, &roll_deg, &pitch_deg, &mahony_yaw_deg);
 		Yaw_IntegrateGyro(imu.gz_dps, dt);
@@ -503,63 +549,128 @@ int main(void) {
 		 * a new mode=1 request, with valid DPS310 home and fresh samples.
 		 * Do not update barometer PID at IMU 500 Hz.
 		 */
-		const float manual_throttle = (float) DroneLink_Throttle(&drone_link);
+		const float manual_throttle = (float)DroneLink_Throttle(&drone_link);
 		const uint8_t alt_request = drone_link.alt_hold_requested ? 1U : 0U;
 		const uint32_t alt_now_ms = HAL_GetTick();
-		const uint8_t baro_healthy = dps310.home_valid && dps310.valid
-				&& (alt_now_ms - dps310.last_update_ms <= 180U)
-				&& isfinite(dps310.altitude_rel_m);
+		const uint8_t baro_healthy = dps310.home_valid && dps310.valid && (alt_now_ms - dps310.last_update_ms <= 180U) && isfinite(dps310.altitude_rel_m);
 
-		if (!alt_request) {
-			if (altitude_hold.active)
+		const uint8_t ps4_auto = drone_link.ps4_auto_requested ? 1U : 0U;
+		if (ps4_auto)
+		{
+			/* Mode 2: only climb is a vertical user input. The 1400 in T
+			 * is a nominal enable/reference, never a stick-to-motor command.
+			 * Until 0.30 m, a bounded spool-up stage is needed to lift off.
+			 */
+			if (!ps4_auto_was_requested)
+			{
 				AltitudeHold_Reset(&altitude_hold);
-			/* User must switch to MANUAL before re-entering HOLD. */
-			if (manual_throttle <= 1000.0f || alt_hold_prev_request)
-				alt_hold_blocked = 0U;
-		} else {
-			if (manual_throttle <= 1000.0f || !baro_healthy) {
+				ps4_takeoff_us = 1000.0f;
+				ps4_alt_fault_latched = 0U;
+			}
+			if (!baro_healthy && altitude_hold.active)
+				ps4_alt_fault_latched = 1U;
+			if (manual_throttle <= 1000.0f || !baro_healthy ||
+				ps4_alt_fault_latched)
+			{
 				if (altitude_hold.active)
 					++alt_hold_faults;
 				AltitudeHold_Reset(&altitude_hold);
-				alt_hold_blocked = 1U;
+				ps4_takeoff_us = 1000.0f;
 			}
-			if (!alt_hold_prev_request && !alt_hold_blocked) {
-				/* Prevent ALT_HOLD engaging on the ground or without
-				 * sufficient manual motor power; verify true flight separately.
-				 */
-				if (baro_healthy && manual_throttle >= 1200.0f
-						&& dps310.altitude_rel_m >= 0.30f) {
-					if (!AltitudeHold_Start(&altitude_hold,
-							dps310.altitude_rel_m, manual_throttle,
-							dps310.last_update_ms))
-						alt_hold_blocked = 1U;
-				} else
+			else if (!altitude_hold.active)
+			{
+				const int16_t takeoff_climb = DroneLink_ClimbCommand(&drone_link);
+				if (takeoff_climb > 0)
+				{
+					ps4_takeoff_us += PS4_TAKEOFF_RAMP_US_PER_S * dt;
+					if (ps4_takeoff_us > PS4_TAKEOFF_MAX_US)
+						ps4_takeoff_us = PS4_TAKEOFF_MAX_US;
+				}
+				else
+				{
+					/* Released before valid lift: stop the takeoff attempt. */
+					ps4_takeoff_us = 1000.0f;
+				}
+				if (takeoff_climb > 0 && ps4_takeoff_us >= 1350.0f &&
+					dps310.altitude_rel_m >= PS4_TAKEOFF_MIN_LIFT_M)
+				{
+					(void)AltitudeHold_Start(&altitude_hold,
+											 dps310.altitude_rel_m, ps4_takeoff_us,
+											 dps310.last_update_ms);
+				}
+			}
+			throttle = altitude_hold.active ? altitude_hold.throttle_us : ps4_takeoff_us;
+		}
+		else
+		{
+			ps4_takeoff_us = 1000.0f;
+			ps4_alt_fault_latched = 0U;
+			if (!alt_request)
+			{
+				if (altitude_hold.active)
+					AltitudeHold_Reset(&altitude_hold);
+				/* User must switch to MANUAL before re-entering HOLD. */
+				if (manual_throttle <= 1000.0f || alt_hold_prev_request)
+					alt_hold_blocked = 0U;
+			}
+			else
+			{
+				if (manual_throttle <= 1000.0f || !baro_healthy)
+				{
+					if (altitude_hold.active)
+						++alt_hold_faults;
+					AltitudeHold_Reset(&altitude_hold);
 					alt_hold_blocked = 1U;
+				}
+				if (!alt_hold_prev_request && !alt_hold_blocked)
+				{
+					/* Preserve the original web ALT_HOLD entry check. */
+					if (baro_healthy && manual_throttle >= 1200.0f && dps310.altitude_rel_m >= 0.10f)
+					{
+						if (!AltitudeHold_Start(&altitude_hold,
+												dps310.altitude_rel_m, manual_throttle,
+												dps310.last_update_ms))
+							alt_hold_blocked = 1U;
+					}
+					else
+						alt_hold_blocked = 1U;
+				}
 			}
+			throttle = altitude_hold.active ? altitude_hold.throttle_us : manual_throttle;
 		}
 		alt_hold_prev_request = alt_request;
-		throttle =
-				altitude_hold.active ?
-						altitude_hold.throttle_us : manual_throttle;
-		if (throttle > 1000.0f) {
+		ps4_auto_was_requested = ps4_auto;
+		if (throttle > 1000.0f)
+		{
 			/* Mặc định: góc P -> tốc độ PI. Giữ nguyên dấu IMU và mixer. */
-			AngleController_Update(&angle_ctrl, 0.0f, 0.0f, roll_deg, pitch_deg,
-					dt, &roll_rate_sp, &pitch_rate_sp);
+			AngleController_Update(&angle_ctrl,
+								   (float)DroneLink_RollCommand(&drone_link),
+								   (float)DroneLink_PitchCommand(&drone_link),
+								   roll_deg, pitch_deg,
+								   dt, &roll_rate_sp, &pitch_rate_sp);
 			/* Yaw setpoint là hướng MMC ở thời điểm BẮT ĐẦU lên ga.
 			 * Không cập nhật setpoint theo góc hiện tại khi đang bay. */
 			uint32_t mag_age = HAL_GetTick() - mag_last_good_tick;
-			uint8_t mag_fresh = yaw_estimate_valid
-					&& (mag_age <= MAG_FRESH_TIMEOUT_MS);
-			if (mag_fresh && !yaw_target_latched) {
+			uint8_t mag_fresh = yaw_estimate_valid && (mag_age <= MAG_FRESH_TIMEOUT_MS);
+			if (mag_fresh && !yaw_target_latched)
+			{
 				yaw_target_deg = yaw_deg;
 				yaw_target_latched = 1U;
 				PID_Reset(&angle_ctrl.yaw);
 				PID_Reset(&rate_ctrl.yaw);
 			}
-			if (mag_fresh && yaw_target_latched) {
+			if (mag_fresh && yaw_target_latched)
+			{
+				/* PS4 left-X requests yaw speed; the existing yaw PID
+				 * continues holding heading whenever stick is centered. */
+				if (ps4_auto)
+					yaw_target_deg = Yaw_Wrap360(yaw_target_deg +
+												 (float)DroneLink_YawRateCommand(&drone_link) * dt);
 				yaw_rate_sp = AngleController_UpdateYaw(&angle_ctrl,
-						yaw_target_deg, yaw_deg, dt);
-			} else {
+														yaw_target_deg, yaw_deg, dt);
+			}
+			else
+			{
 				/* MMC lỗi/stale: bỏ yaw holding, không tác động dựa trên hướng cũ. */
 				yaw_rate_sp = 0.0f;
 				yaw_target_latched = 0U;
@@ -567,13 +678,15 @@ int main(void) {
 				PID_Reset(&rate_ctrl.yaw);
 			}
 			RateController_Update(&rate_ctrl, roll_rate_sp, pitch_rate_sp,
-					yaw_rate_sp, imu.gx_dps, imu.gy_dps, imu.gz_dps, dt,
-					&roll_pid, &pitch_pid, &yaw_pid);
+								  yaw_rate_sp, imu.gx_dps, imu.gy_dps, imu.gz_dps, dt,
+								  &roll_pid, &pitch_pid, &yaw_pid);
 			if (!mag_fresh)
 				yaw_pid = 0.0f;
 
 			Mixer_QuadX(throttle, roll_pid, pitch_pid, yaw_pid, &motor);
-		} else {
+		}
+		else
+		{
 			motor.m1 = motor.m2 = motor.m3 = motor.m4 = 1000U;
 		}
 
@@ -584,91 +697,98 @@ int main(void) {
 		/* DPS310 32 Hz: only update vertical PID when a NEW sample arrives. */
 		static uint32_t last_baro_tick = 0U;
 		uint32_t baro_now_ms = HAL_GetTick();
-		if ((baro_now_ms - last_baro_tick) >= 10U) {
+		if ((baro_now_ms - last_baro_tick) >= 10U)
+		{
 			last_baro_tick = baro_now_ms;
-			if (DPS310_ReadIfReady(&dps310) == HAL_OK && altitude_hold.active
-					&& dps310.home_valid) {
+			if (DPS310_ReadIfReady(&dps310) == HAL_OK && altitude_hold.active && dps310.home_valid)
+			{
 				if (!AltitudeHold_Update(&altitude_hold, dps310.altitude_rel_m,
-						dps310.last_update_ms,
-						DroneLink_ClimbCommand(&drone_link))) {
+										 dps310.last_update_ms,
+										 DroneLink_ClimbCommand(&drone_link)))
+				{
 					AltitudeHold_Reset(&altitude_hold);
 					alt_hold_blocked = 1U;
+					if (drone_link.ps4_auto_requested)
+						ps4_alt_fault_latched = 1U;
 					++alt_hold_faults;
 				}
 			}
 		}
 
-		(void) DroneLink_SendStatus(&drone_link, roll_deg, pitch_deg, yaw_deg,
-				motor.m1, motor.m2, motor.m3, motor.m4);
+		(void)DroneLink_SendStatus(&drone_link, roll_deg, pitch_deg, yaw_deg,
+								   motor.m1, motor.m2, motor.m3, motor.m4,
+								   altitude_hold.active,
+								   isfinite(dps310.altitude_rel_m) ? dps310.altitude_rel_m : 0.0f);
 
 		static uint32_t last_log_tick = 0U; /**< Mốc gửi log gần nhất, đơn vị ms; giữ giá trị giữa các vòng lặp. */
 
 		uint32_t log_now = HAL_GetTick();
-		if ((log_now - last_log_tick >= 500U)
-				&& (huart1.gState == HAL_UART_STATE_READY)) {
+		if ((log_now - last_log_tick >= 500U) && (huart1.gState == HAL_UART_STATE_READY))
+		{
 			/** @brief Số ký tự snprintf cần ghi, không tính NUL; chỉ gửi khi bộ đệm đủ chỗ. */
 			int len =
-					snprintf(tx_frame, sizeof(tx_frame),
-							"thr=%u angle=%.1f,%.1f,%.1f pid=%.1f,%.1f m=%u,%u,%u,%u\r\n"
-									"LORA T_RX=%lu P_WR=%lu P_RD=%lu TIMEOUT=%lu BAD=%lu"
-									" RX_BYTE=%lu S_REQ=%lu TX_DMA_START=%lu TX_DMA_DONE=%lu"
-									" TX_BUSY=%lu TX_ERR=%lu UART_ERR=%lu LINK_TX_BUSY=%lu LINK_TX_FAIL=%lu RX_FIFO_OVF=%lu RX_RESTART=%lu RX_RESTART_ERR=%lu RX_IT_FAIL=%lu TX_STALL=%lu UART_LAST=0x%lX\r\n"
-									"YAW fused=%.1f mag=%.1f raw_heading=%.1f target=%.1f"
-									" e=%.1f rate_sp=%.1f gz=%.1f out=%.1f"
-									" mag_age=%lu ok=%lu err=%lu reject=%lu hold=%u\r\n"
-									"BARO alt=%.2f P=%.1f T=%.2f home=%u samples=%lu err=%lu age=%lu\r\n"
-									"ALT req=%u active=%u block=%u cmd=%d target=%.2f height=%.2f vz=%.2f vzsp=%.2f trim=%.0f I=%.0f out=%.0f faults=%lu\r\n",
-							(unsigned) DroneLink_Throttle(&drone_link),
-							roll_deg, pitch_deg, yaw_deg, roll_pid, pitch_pid,
-							(unsigned) motor.m1, (unsigned) motor.m2,
-							(unsigned) motor.m3, (unsigned) motor.m4,
-							(unsigned long) drone_link.throttle_rx_count,
-							(unsigned long) drone_link.pid_write_count,
-							(unsigned long) drone_link.pid_read_count,
-							(unsigned long) drone_link.throttle_timeout_count,
-							(unsigned long) drone_link.rx_invalid_frames,
-							(unsigned long) drone_link.rx_byte_count,
-							(unsigned long) drone_link.status_request_count,
-							(unsigned long) lora.tx_start_count,
-							(unsigned long) lora.tx_done_count,
-							(unsigned long) lora.tx_busy_count,
-							(unsigned long) lora.tx_error_count,
-							(unsigned long) lora.uart_error_count,
-							(unsigned long) drone_link.tx_busy_count,
-							(unsigned long) drone_link.tx_failed_count,
-							(unsigned long) lora.rx_overflow_count,
-							(unsigned long) lora.rx_restart_count,
-							(unsigned long) lora.rx_restart_fail_count,
-							(unsigned long) lora.rx_rearm_fail_count,
-							(unsigned long) lora.tx_stall_recover_count,
-							(unsigned long) lora.last_uart_error, yaw_deg,
-							mag_yaw_deg, mag_heading_deg, yaw_target_deg,
-							Yaw_Wrap180(yaw_target_deg - yaw_deg), yaw_rate_sp,
-							imu.gz_dps, yaw_pid,
-							(unsigned long) (HAL_GetTick() - mag_last_good_tick),
-							(unsigned long) mag_ok_count,
-							(unsigned long) mag_error_count,
-							(unsigned long) mag_rejected_count,
-							(unsigned) yaw_target_latched,
-							dps310.altitude_rel_m, dps310.pressure_pa,
-							dps310.temperature_c, (unsigned) dps310.home_valid,
-							(unsigned long) dps310.sample_count,
-							(unsigned long) dps310.error_count,
-							(unsigned long) (HAL_GetTick()
-									- dps310.last_update_ms),
-							(unsigned) drone_link.alt_hold_requested,
-							(unsigned) altitude_hold.active,
-							(unsigned) alt_hold_blocked,
-							(int) DroneLink_ClimbCommand(&drone_link),
-							altitude_hold.target_m, dps310.altitude_rel_m,
-							altitude_hold.vz_mps, altitude_hold.vz_setpoint_mps,
-							altitude_hold.trim_us, altitude_hold.integral_us,
-							altitude_hold.throttle_us,
-							(unsigned long) alt_hold_faults);
+				snprintf(tx_frame, sizeof(tx_frame),
+						 "thr=%u angle=%.1f,%.1f,%.1f pid=%.1f,%.1f m=%u,%u,%u,%u\r\n"
+						 "LORA T_RX=%lu P_WR=%lu P_RD=%lu TIMEOUT=%lu BAD=%lu"
+						 " RX_BYTE=%lu S_REQ=%lu TX_DMA_START=%lu TX_DMA_DONE=%lu"
+						 " TX_BUSY=%lu TX_ERR=%lu UART_ERR=%lu LINK_TX_BUSY=%lu LINK_TX_FAIL=%lu RX_FIFO_OVF=%lu RX_RESTART=%lu RX_RESTART_ERR=%lu RX_IT_FAIL=%lu TX_STALL=%lu UART_LAST=0x%lX\r\n"
+						 "YAW fused=%.1f mag=%.1f raw_heading=%.1f target=%.1f"
+						 " e=%.1f rate_sp=%.1f gz=%.1f out=%.1f"
+						 " mag_age=%lu ok=%lu err=%lu reject=%lu hold=%u\r\n"
+						 "BARO alt=%.2f P=%.1f T=%.2f home=%u samples=%lu err=%lu age=%lu\r\n"
+						 "ALT req=%u active=%u block=%u cmd=%d target=%.2f height=%.2f vz=%.2f vzsp=%.2f trim=%.0f I=%.0f out=%.0f faults=%lu\r\n",
+						 (unsigned)DroneLink_Throttle(&drone_link),
+						 roll_deg, pitch_deg, yaw_deg, roll_pid, pitch_pid,
+						 (unsigned)motor.m1, (unsigned)motor.m2,
+						 (unsigned)motor.m3, (unsigned)motor.m4,
+						 (unsigned long)drone_link.throttle_rx_count,
+						 (unsigned long)drone_link.pid_write_count,
+						 (unsigned long)drone_link.pid_read_count,
+						 (unsigned long)drone_link.throttle_timeout_count,
+						 (unsigned long)drone_link.rx_invalid_frames,
+						 (unsigned long)drone_link.rx_byte_count,
+						 (unsigned long)drone_link.status_request_count,
+						 (unsigned long)lora.tx_start_count,
+						 (unsigned long)lora.tx_done_count,
+						 (unsigned long)lora.tx_busy_count,
+						 (unsigned long)lora.tx_error_count,
+						 (unsigned long)lora.uart_error_count,
+						 (unsigned long)drone_link.tx_busy_count,
+						 (unsigned long)drone_link.tx_failed_count,
+						 (unsigned long)lora.rx_overflow_count,
+						 (unsigned long)lora.rx_restart_count,
+						 (unsigned long)lora.rx_restart_fail_count,
+						 (unsigned long)lora.rx_rearm_fail_count,
+						 (unsigned long)lora.tx_stall_recover_count,
+						 (unsigned long)lora.last_uart_error, yaw_deg,
+						 mag_yaw_deg, mag_heading_deg, yaw_target_deg,
+						 Yaw_Wrap180(yaw_target_deg - yaw_deg), yaw_rate_sp,
+						 imu.gz_dps, yaw_pid,
+						 (unsigned long)(HAL_GetTick() - mag_last_good_tick),
+						 (unsigned long)mag_ok_count,
+						 (unsigned long)mag_error_count,
+						 (unsigned long)mag_rejected_count,
+						 (unsigned)yaw_target_latched,
+						 dps310.altitude_rel_m, dps310.pressure_pa,
+						 dps310.temperature_c, (unsigned)dps310.home_valid,
+						 (unsigned long)dps310.sample_count,
+						 (unsigned long)dps310.error_count,
+						 (unsigned long)(HAL_GetTick() - dps310.last_update_ms),
+						 (unsigned)drone_link.alt_hold_requested,
+						 (unsigned)altitude_hold.active,
+						 (unsigned)alt_hold_blocked,
+						 (int)DroneLink_ClimbCommand(&drone_link),
+						 altitude_hold.target_m, dps310.altitude_rel_m,
+						 altitude_hold.vz_mps, altitude_hold.vz_setpoint_mps,
+						 altitude_hold.trim_us, altitude_hold.integral_us,
+						 altitude_hold.throttle_us,
+						 (unsigned long)alt_hold_faults);
 
-			if ((len > 0) && ((size_t) len < sizeof(tx_frame))) {
-				if (HAL_UART_Transmit_IT(&huart1, (uint8_t*) tx_frame,
-						(uint16_t) len) == HAL_OK) {
+			if ((len > 0) && ((size_t)len < sizeof(tx_frame)))
+			{
+				if (HAL_UART_Transmit_IT(&huart1, (uint8_t *)tx_frame,
+										 (uint16_t)len) == HAL_OK)
+				{
 					last_log_tick = log_now;
 				}
 			}
@@ -685,9 +805,10 @@ int main(void) {
  * @brief System Clock Configuration
  * @retval None
  */
-void SystemClock_Config(void) {
-	RCC_OscInitTypeDef RCC_OscInitStruct = { 0 };
-	RCC_ClkInitTypeDef RCC_ClkInitStruct = { 0 };
+void SystemClock_Config(void)
+{
+	RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+	RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
 	/** Configure the main internal regulator output voltage
 	 */
@@ -706,20 +827,21 @@ void SystemClock_Config(void) {
 	RCC_OscInitStruct.PLL.PLLN = 84;
 	RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
 	RCC_OscInitStruct.PLL.PLLQ = 4;
-	if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {
+	if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+	{
 		Error_Handler();
 	}
 
 	/** Initializes the CPU, AHB and APB buses clocks
 	 */
-	RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK
-			| RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
+	RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK | RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
 	RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
 	RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
 	RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
 	RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
-	if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK) {
+	if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
+	{
 		Error_Handler();
 	}
 }
@@ -729,7 +851,8 @@ void SystemClock_Config(void) {
  * @param None
  * @retval None
  */
-static void MX_I2C1_Init(void) {
+static void MX_I2C1_Init(void)
+{
 
 	/* USER CODE BEGIN I2C1_Init 0 */
 
@@ -747,7 +870,8 @@ static void MX_I2C1_Init(void) {
 	hi2c1.Init.OwnAddress2 = 0;
 	hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
 	hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
-	if (HAL_I2C_Init(&hi2c1) != HAL_OK) {
+	if (HAL_I2C_Init(&hi2c1) != HAL_OK)
+	{
 		Error_Handler();
 	}
 	/* USER CODE BEGIN I2C1_Init 2 */
@@ -760,7 +884,8 @@ static void MX_I2C1_Init(void) {
  * @param None
  * @retval None
  */
-static void MX_I2C2_Init(void) {
+static void MX_I2C2_Init(void)
+{
 
 	/* USER CODE BEGIN I2C2_Init 0 */
 
@@ -778,7 +903,8 @@ static void MX_I2C2_Init(void) {
 	hi2c2.Init.OwnAddress2 = 0;
 	hi2c2.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
 	hi2c2.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
-	if (HAL_I2C_Init(&hi2c2) != HAL_OK) {
+	if (HAL_I2C_Init(&hi2c2) != HAL_OK)
+	{
 		Error_Handler();
 	}
 	/* USER CODE BEGIN I2C2_Init 2 */
@@ -791,7 +917,8 @@ static void MX_I2C2_Init(void) {
  * @param None
  * @retval None
  */
-static void MX_SPI1_Init(void) {
+static void MX_SPI1_Init(void)
+{
 
 	/* USER CODE BEGIN SPI1_Init 0 */
 
@@ -813,7 +940,8 @@ static void MX_SPI1_Init(void) {
 	hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
 	hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
 	hspi1.Init.CRCPolynomial = 10;
-	if (HAL_SPI_Init(&hspi1) != HAL_OK) {
+	if (HAL_SPI_Init(&hspi1) != HAL_OK)
+	{
 		Error_Handler();
 	}
 	/* USER CODE BEGIN SPI1_Init 2 */
@@ -826,7 +954,8 @@ static void MX_SPI1_Init(void) {
  * @param None
  * @retval None
  */
-static void MX_SPI2_Init(void) {
+static void MX_SPI2_Init(void)
+{
 
 	/* USER CODE BEGIN SPI2_Init 0 */
 
@@ -848,7 +977,8 @@ static void MX_SPI2_Init(void) {
 	hspi2.Init.TIMode = SPI_TIMODE_DISABLE;
 	hspi2.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
 	hspi2.Init.CRCPolynomial = 10;
-	if (HAL_SPI_Init(&hspi2) != HAL_OK) {
+	if (HAL_SPI_Init(&hspi2) != HAL_OK)
+	{
 		Error_Handler();
 	}
 	/* USER CODE BEGIN SPI2_Init 2 */
@@ -861,14 +991,15 @@ static void MX_SPI2_Init(void) {
  * @param None
  * @retval None
  */
-static void MX_TIM5_Init(void) {
+static void MX_TIM5_Init(void)
+{
 
 	/* USER CODE BEGIN TIM5_Init 0 */
 
 	/* USER CODE END TIM5_Init 0 */
 
-	TIM_MasterConfigTypeDef sMasterConfig = { 0 };
-	TIM_OC_InitTypeDef sConfigOC = { 0 };
+	TIM_MasterConfigTypeDef sMasterConfig = {0};
+	TIM_OC_InitTypeDef sConfigOC = {0};
 
 	/* USER CODE BEGIN TIM5_Init 1 */
 
@@ -879,33 +1010,34 @@ static void MX_TIM5_Init(void) {
 	htim5.Init.Period = 4999;
 	htim5.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
 	htim5.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-	if (HAL_TIM_PWM_Init(&htim5) != HAL_OK) {
+	if (HAL_TIM_PWM_Init(&htim5) != HAL_OK)
+	{
 		Error_Handler();
 	}
 	sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
 	sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-	if (HAL_TIMEx_MasterConfigSynchronization(&htim5, &sMasterConfig)
-			!= HAL_OK) {
+	if (HAL_TIMEx_MasterConfigSynchronization(&htim5, &sMasterConfig) != HAL_OK)
+	{
 		Error_Handler();
 	}
 	sConfigOC.OCMode = TIM_OCMODE_PWM1;
 	sConfigOC.Pulse = 0;
 	sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
 	sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
-	if (HAL_TIM_PWM_ConfigChannel(&htim5, &sConfigOC, TIM_CHANNEL_1)
-			!= HAL_OK) {
+	if (HAL_TIM_PWM_ConfigChannel(&htim5, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+	{
 		Error_Handler();
 	}
-	if (HAL_TIM_PWM_ConfigChannel(&htim5, &sConfigOC, TIM_CHANNEL_2)
-			!= HAL_OK) {
+	if (HAL_TIM_PWM_ConfigChannel(&htim5, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
+	{
 		Error_Handler();
 	}
-	if (HAL_TIM_PWM_ConfigChannel(&htim5, &sConfigOC, TIM_CHANNEL_3)
-			!= HAL_OK) {
+	if (HAL_TIM_PWM_ConfigChannel(&htim5, &sConfigOC, TIM_CHANNEL_3) != HAL_OK)
+	{
 		Error_Handler();
 	}
-	if (HAL_TIM_PWM_ConfigChannel(&htim5, &sConfigOC, TIM_CHANNEL_4)
-			!= HAL_OK) {
+	if (HAL_TIM_PWM_ConfigChannel(&htim5, &sConfigOC, TIM_CHANNEL_4) != HAL_OK)
+	{
 		Error_Handler();
 	}
 	/* USER CODE BEGIN TIM5_Init 2 */
@@ -919,7 +1051,8 @@ static void MX_TIM5_Init(void) {
  * @param None
  * @retval None
  */
-static void MX_USART1_UART_Init(void) {
+static void MX_USART1_UART_Init(void)
+{
 
 	/* USER CODE BEGIN USART1_Init 0 */
 
@@ -936,7 +1069,8 @@ static void MX_USART1_UART_Init(void) {
 	huart1.Init.Mode = UART_MODE_TX_RX;
 	huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
 	huart1.Init.OverSampling = UART_OVERSAMPLING_16;
-	if (HAL_UART_Init(&huart1) != HAL_OK) {
+	if (HAL_UART_Init(&huart1) != HAL_OK)
+	{
 		Error_Handler();
 	}
 	/* USER CODE BEGIN USART1_Init 2 */
@@ -949,7 +1083,8 @@ static void MX_USART1_UART_Init(void) {
  * @param None
  * @retval None
  */
-static void MX_USART6_UART_Init(void) {
+static void MX_USART6_UART_Init(void)
+{
 
 	/* USER CODE BEGIN USART6_Init 0 */
 
@@ -966,7 +1101,8 @@ static void MX_USART6_UART_Init(void) {
 	huart6.Init.Mode = UART_MODE_TX_RX;
 	huart6.Init.HwFlowCtl = UART_HWCONTROL_NONE;
 	huart6.Init.OverSampling = UART_OVERSAMPLING_16;
-	if (HAL_UART_Init(&huart6) != HAL_OK) {
+	if (HAL_UART_Init(&huart6) != HAL_OK)
+	{
 		Error_Handler();
 	}
 	/* USER CODE BEGIN USART6_Init 2 */
@@ -977,7 +1113,8 @@ static void MX_USART6_UART_Init(void) {
 /**
  * Enable DMA controller clock
  */
-static void MX_DMA_Init(void) {
+static void MX_DMA_Init(void)
+{
 
 	/* DMA controller clock enable */
 	__HAL_RCC_DMA2_CLK_ENABLE();
@@ -996,8 +1133,9 @@ static void MX_DMA_Init(void) {
  * @param None
  * @retval None
  */
-static void MX_GPIO_Init(void) {
-	GPIO_InitTypeDef GPIO_InitStruct = { 0 };
+static void MX_GPIO_Init(void)
+{
+	GPIO_InitTypeDef GPIO_InitStruct = {0};
 	/* USER CODE BEGIN MX_GPIO_Init_1 */
 
 	/* USER CODE END MX_GPIO_Init_1 */
@@ -1033,20 +1171,26 @@ static void MX_GPIO_Init(void) {
 }
 
 /* USER CODE BEGIN 4 */
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
-	if (huart->Instance == USART6) {
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+	if (huart->Instance == USART6)
+	{
 		E220_RxCallback(&lora);
 	}
 }
 
-void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
-	if (huart->Instance == USART6) {
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
+{
+	if (huart->Instance == USART6)
+	{
 		E220_TxCpltCallback(&lora);
 	}
 }
 
-void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart) {
-	if (huart->Instance == USART6) {
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+{
+	if (huart->Instance == USART6)
+	{
 		E220_ErrorCallback(&lora);
 	}
 }
@@ -1056,11 +1200,13 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart) {
  * @brief  This function is executed in case of error occurrence.
  * @retval None
  */
-void Error_Handler(void) {
+void Error_Handler(void)
+{
 	/* USER CODE BEGIN Error_Handler_Debug */
 	/* User can add his own implementation to report the HAL error return state */
 	__disable_irq();
-	while (1) {
+	while (1)
+	{
 	}
 	/* USER CODE END Error_Handler_Debug */
 }
