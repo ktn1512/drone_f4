@@ -110,17 +110,23 @@ DPS310_t dps310;
 
 /* ALT_HOLD: control independent of Roll/Pitch/Yaw PID. */
 AltitudeHold_t altitude_hold;
-static uint8_t alt_hold_blocked = 0U;
-static uint8_t alt_hold_prev_request = 0U;
 static uint32_t alt_hold_faults = 0U;
-/* PS4 mode 2 uses a separate takeoff stage before the existing altitude PID.
- * No ESC/PWM/mixer configuration is changed. */
-static float ps4_takeoff_us = 1000.0f;
-static uint8_t ps4_auto_was_requested = 0U;
-static uint8_t ps4_alt_fault_latched = 0U;
-#define PS4_TAKEOFF_RAMP_US_PER_S 90.0f
-#define PS4_TAKEOFF_MAX_US 1450.0f
-#define PS4_TAKEOFF_MIN_LIFT_M 0.30f
+/* AUTO (T mode 2): cat canh + giu do cao bang altitude PID.
+ * Moi mode khac (mode 0 = DUNG) -> tat ALT_HOLD, motor 1000. */
+static uint8_t auto_was_requested = 0U;
+static uint8_t alt_fault_latched = 0U;
+static uint8_t armed = 0U;
+static float ground_alt_m = 0.0f;  /* do cao baro luc cat canh */
+static uint32_t land_since_ms = 0U;
+static int16_t climb_cmd = 0;	   /* climb thuc dung (co failsafe) */
+volatile uint8_t alt_exit_reason = ALT_EXIT_NONE; /* AltExitReason_t, gui trong goi S */
+#define AUTO_IDLE_US 1150.0f		/* quay khong tai luc vua arm tren mat dat */
+#define AUTO_HOVER_GUESS_US 1350.0f /* uoc luong ga treo, PID tu hoc them */
+#define LAND_BAND_M 0.15f
+#define LAND_CONFIRM_MS 1000U
+/* Phai lon hon DRONE_LINK_CLIMB_TIMEOUT_MS (mat 1 goi S khong duoc kich failsafe). */
+#define LINK_LOST_MS 3000U
+#define FAILSAFE_CLIMB (-40)
 
 /*Bộ lọc mahony*/
 Mahony_t mahony;
@@ -147,10 +153,6 @@ static uint32_t mag_ok_count, mag_error_count, mag_rejected_count;
 float roll_pid, pitch_pid, yaw_pid;
 
 float throttle = 1000;
-
-char uart_buf[128];
-
-static char tx_frame[2048];
 
 /* USER CODE END PV */
 
@@ -228,6 +230,22 @@ static void Motors_Write(void)
 	__HAL_TIM_SET_COMPARE(&htim5, TIM_CHANNEL_2, motor.m2);
 	__HAL_TIM_SET_COMPARE(&htim5, TIM_CHANNEL_3, motor.m3);
 	__HAL_TIM_SET_COMPARE(&htim5, TIM_CHANNEL_4, motor.m4);
+}
+
+/** @brief Tra goi S (chi khi co T dang cho): ga THAT + ly do thoat ALT_HOLD. */
+static void Send_Status(void)
+{
+	float thr = throttle;
+	if (!isfinite(thr) || thr < 1000.0f)
+		thr = 1000.0f;
+	else if (thr > (float)DRONE_LINK_MAX_THR)
+		thr = (float)DRONE_LINK_MAX_THR;
+	(void)DroneLink_SendStatus(&drone_link, (uint16_t)(thr + 0.5f),
+							   roll_deg, pitch_deg, yaw_deg,
+							   motor.m1, motor.m2, motor.m3, motor.m4,
+							   altitude_hold.active,
+							   isfinite(dps310.altitude_rel_m) ? dps310.altitude_rel_m : 0.0f,
+							   alt_exit_reason);
 }
 
 /* Chuẩn góc yaw 0..360 và sai số ngắn nhất -180..180 (độ). */
@@ -381,20 +399,12 @@ int main(void)
 	mmc_status = MMC5983_Init(&mmc);
 	if (mmc_status != HAL_OK)
 	{
-		snprintf(uart_buf, sizeof(uart_buf),
-				 "MMC INIT FAILED I2C_ERR=0x%08lX\r\n",
-				 (unsigned long)HAL_I2C_GetError(&hi2c1));
-		HAL_UART_Transmit(&huart1, (uint8_t *)uart_buf,
-						  (uint16_t)strlen(uart_buf), 100U);
 		Error_Handler();
 	}
 	mag_next_tick = HAL_GetTick();
 
 	if (ICM42670_Init(&icm) != ICM42670_OK)
 	{
-		sprintf(uart_buf, "ICM init err\r\n");
-		HAL_UART_Transmit(&huart1, (uint8_t *)uart_buf, strlen(uart_buf),
-						  HAL_MAX_DELAY);
 		Error_Handler();
 	}
 
@@ -430,8 +440,6 @@ int main(void)
 
 	if (!dps310.home_valid)
 	{
-		HAL_UART_Transmit(&huart1, (uint8_t *)"DPS310 CAL ERROR\r\n",
-						  sizeof("DPS310 CAL ERROR\r\n") - 1U, 100U);
 
 		Error_Handler();
 	}
@@ -467,6 +475,11 @@ int main(void)
 	}
 
 	DroneLink_Init(&drone_link, &lora, &angle_ctrl, &rate_ctrl);
+	/* Use the existing USART1 38400 8N1 settings. GPS is optional for flight.
+	 * stm32f4xx_it.c must provide USART1_IRQHandler -> HAL_UART_IRQHandler. */
+	HAL_NVIC_SetPriority(USART1_IRQn, 6U, 0U);
+	HAL_NVIC_EnableIRQ(USART1_IRQn);
+	(void)GPS_Init(&huart1);
 	AltitudeHold_Reset(&altitude_hold);
 	motor.m1 = motor.m2 = motor.m3 = motor.m4 = 1000U;
 
@@ -488,6 +501,7 @@ int main(void)
 	while (1)
 	{
 		DroneLink_Poll(&drone_link);
+		GPS_Process(); /* Decode queued RMC/GGA outside UART IRQ. */
 
 		uint32_t now_cycles = DWT->CYCCNT;
 		uint32_t elapsed_cycles = now_cycles - last_control_cycles;
@@ -510,10 +524,7 @@ int main(void)
 		if (ICM42670_ReadAll(&imu) != ICM42670_OK)
 		{
 			last_control_cycles = last_sample_cycles = DWT->CYCCNT;
-			(void)DroneLink_SendStatus(&drone_link, roll_deg, pitch_deg,
-									   yaw_deg, motor.m1, motor.m2, motor.m3, motor.m4,
-									   altitude_hold.active,
-									   isfinite(dps310.altitude_rel_m) ? dps310.altitude_rel_m : 0.0f);
+			Send_Status();
 			continue;
 		}
 
@@ -545,101 +556,104 @@ int main(void)
 
 		// roll_deg  = -roll_deg;
 		// pitch_deg = -pitch_deg;
-		/* MANUAL / ALT_HOLD arbitration. ALT_HOLD is entered only on
-		 * a new mode=1 request, with valid DPS310 home and fresh samples.
-		 * Do not update barometer PID at IMU 500 Hz.
+		/* AUTO / DUNG arbitration. ALT_HOLD chi chay khi T mode 2,
+		 * DPS310 co home hop le va mau moi.
+		 * Khong cap nhat PID do cao o toc do IMU 500 Hz.
 		 */
-		const float manual_throttle = (float)DroneLink_Throttle(&drone_link);
-		const uint8_t alt_request = drone_link.alt_hold_requested ? 1U : 0U;
 		const uint32_t alt_now_ms = HAL_GetTick();
 		const uint8_t baro_healthy = dps310.home_valid && dps310.valid && (alt_now_ms - dps310.last_update_ms <= 180U) && isfinite(dps310.altitude_rel_m);
 
-		const uint8_t ps4_auto = drone_link.ps4_auto_requested ? 1U : 0U;
-		if (ps4_auto)
+		const uint8_t auto_mode = drone_link.auto_requested ? 1U : 0U;
+		if (auto_mode)
 		{
-			/* Mode 2: only climb is a vertical user input. The 1400 in T
-			 * is a nominal enable/reference, never a stick-to-motor command.
-			 * Until 0.30 m, a bounded spool-up stage is needed to lift off.
-			 */
-			if (!ps4_auto_was_requested)
+			if (!auto_was_requested)
 			{
 				AltitudeHold_Reset(&altitude_hold);
-				ps4_takeoff_us = 1000.0f;
-				ps4_alt_fault_latched = 0U;
+				armed = 0U;
+				alt_fault_latched = 0U;
+				land_since_ms = 0U;
 			}
+			/* Failsafe: mat T qua LINK_LOST_MS -> tu ha cham, KHONG cat motor giua troi. */
+			const uint8_t link_lost =
+				(uint32_t)(alt_now_ms - drone_link.last_throttle_ms) > LINK_LOST_MS;
+			climb_cmd = link_lost ? (int16_t)FAILSAFE_CLIMB
+								  : DroneLink_ClimbCommand(&drone_link);
+
 			if (!baro_healthy && altitude_hold.active)
-				ps4_alt_fault_latched = 1U;
-			if (manual_throttle <= 1000.0f || !baro_healthy ||
-				ps4_alt_fault_latched)
+				alt_fault_latched = 1U;
+
+			if (!baro_healthy || alt_fault_latched)
 			{
 				if (altitude_hold.active)
+				{
 					++alt_hold_faults;
+					alt_exit_reason = alt_fault_latched ? ALT_EXIT_BARO_LATCHED
+														: ALT_EXIT_BARO;
+				}
 				AltitudeHold_Reset(&altitude_hold);
-				ps4_takeoff_us = 1000.0f;
+				armed = 0U;
 			}
 			else if (!altitude_hold.active)
 			{
-				const int16_t takeoff_climb = DroneLink_ClimbCommand(&drone_link);
-				if (takeoff_climb > 0)
+				/* Tren mat dat. Arm o lan day len dau tien. */
+				if (!armed && !link_lost && climb_cmd > 0)
+					armed = 1U;
+				if (armed && link_lost)
 				{
-					ps4_takeoff_us += PS4_TAKEOFF_RAMP_US_PER_S * dt;
-					if (ps4_takeoff_us > PS4_TAKEOFF_MAX_US)
-						ps4_takeoff_us = PS4_TAKEOFF_MAX_US;
+					armed = 0U; /* mat link khi o mat dat: tat */
 				}
-				else
+				else if (armed && climb_cmd > 0)
 				{
-					/* Released before valid lift: stop the takeoff attempt. */
-					ps4_takeoff_us = 1000.0f;
+					/* Bat giu do cao ngay tu mat dat, khong cho 0.3 m. */
+					ground_alt_m = dps310.altitude_rel_m;
+					land_since_ms = 0U;
+					if (AltitudeHold_Start(&altitude_hold, dps310.altitude_rel_m,
+										   AUTO_HOVER_GUESS_US, dps310.last_update_ms))
+					{
+						altitude_hold.throttle_us = AUTO_IDLE_US; /* slew len tu idle */
+						alt_exit_reason = ALT_EXIT_NONE;
+					}
 				}
-				if (takeoff_climb > 0 && ps4_takeoff_us >= 1350.0f &&
-					dps310.altitude_rel_m >= PS4_TAKEOFF_MIN_LIFT_M)
-				{
-					(void)AltitudeHold_Start(&altitude_hold,
-											 dps310.altitude_rel_m, ps4_takeoff_us,
-											 dps310.last_update_ms);
-				}
-			}
-			throttle = altitude_hold.active ? altitude_hold.throttle_us : ps4_takeoff_us;
-		}
-		else
-		{
-			ps4_takeoff_us = 1000.0f;
-			ps4_alt_fault_latched = 0U;
-			if (!alt_request)
-			{
-				if (altitude_hold.active)
-					AltitudeHold_Reset(&altitude_hold);
-				/* User must switch to MANUAL before re-entering HOLD. */
-				if (manual_throttle <= 1000.0f || alt_hold_prev_request)
-					alt_hold_blocked = 0U;
 			}
 			else
 			{
-				if (manual_throttle <= 1000.0f || !baro_healthy)
+				/* Ha canh: dang keo xuong va sat mat dat 1 s -> disarm, motor 1000.
+				 * Bam LEN lai se tu arm + cat canh, khong can KICH HOAT LAI. */
+				const uint8_t near_ground =
+					(dps310.altitude_rel_m - ground_alt_m) < LAND_BAND_M;
+				if (climb_cmd < 0 && near_ground)
 				{
-					if (altitude_hold.active)
-						++alt_hold_faults;
-					AltitudeHold_Reset(&altitude_hold);
-					alt_hold_blocked = 1U;
-				}
-				if (!alt_hold_prev_request && !alt_hold_blocked)
-				{
-					/* Preserve the original web ALT_HOLD entry check. */
-					if (baro_healthy && manual_throttle >= 1200.0f && dps310.altitude_rel_m >= 0.10f)
+					if (land_since_ms == 0U)
+						land_since_ms = alt_now_ms | 1U;
+					else if ((uint32_t)(alt_now_ms - land_since_ms) >= LAND_CONFIRM_MS)
 					{
-						if (!AltitudeHold_Start(&altitude_hold,
-												dps310.altitude_rel_m, manual_throttle,
-												dps310.last_update_ms))
-							alt_hold_blocked = 1U;
+						AltitudeHold_Reset(&altitude_hold);
+						land_since_ms = 0U;
+						armed = 0U;
+						alt_exit_reason = link_lost ? ALT_EXIT_FAILSAFE_LANDED
+													: ALT_EXIT_LANDED;
 					}
-					else
-						alt_hold_blocked = 1U;
 				}
+				else
+					land_since_ms = 0U;
 			}
-			throttle = altitude_hold.active ? altitude_hold.throttle_us : manual_throttle;
+			throttle = altitude_hold.active ? altitude_hold.throttle_us
+											: (armed ? AUTO_IDLE_US : 1000.0f);
 		}
-		alt_hold_prev_request = alt_request;
-		ps4_auto_was_requested = ps4_auto;
+		else
+		{
+			/* T mode 0 (DUNG) hoac mode khong ho tro: cat ALT_HOLD, motor 1000.
+			 * Truoc day nhanh nay thieu -> throttle giu gia tri cu sau khi DUNG. */
+			if (altitude_hold.active)
+				alt_exit_reason = ALT_EXIT_STOPPED;
+			AltitudeHold_Reset(&altitude_hold);
+			armed = 0U;
+			alt_fault_latched = 0U;
+			land_since_ms = 0U;
+			climb_cmd = 0;
+			throttle = 1000.0f;
+		}
+		auto_was_requested = auto_mode;
 		if (throttle > 1000.0f)
 		{
 			/* Mặc định: góc P -> tốc độ PI. Giữ nguyên dấu IMU và mixer. */
@@ -661,9 +675,9 @@ int main(void)
 			}
 			if (mag_fresh && yaw_target_latched)
 			{
-				/* PS4 left-X requests yaw speed; the existing yaw PID
-				 * continues holding heading whenever stick is centered. */
-				if (ps4_auto)
+				/* Can trai ngang = toc do yaw; tha can thi yaw PID
+				 * giu huong hien tai. */
+				if (auto_mode)
 					yaw_target_deg = Yaw_Wrap360(yaw_target_deg +
 												 (float)DroneLink_YawRateCommand(&drone_link) * dt);
 				yaw_rate_sp = AngleController_UpdateYaw(&angle_ctrl,
@@ -703,96 +717,19 @@ int main(void)
 			if (DPS310_ReadIfReady(&dps310) == HAL_OK && altitude_hold.active && dps310.home_valid)
 			{
 				if (!AltitudeHold_Update(&altitude_hold, dps310.altitude_rel_m,
-										 dps310.last_update_ms,
-										 DroneLink_ClimbCommand(&drone_link)))
+										 dps310.last_update_ms, climb_cmd))
 				{
+					alt_exit_reason = ALT_EXIT_UPDATE_FAULT;
 					AltitudeHold_Reset(&altitude_hold);
-					alt_hold_blocked = 1U;
-					if (drone_link.ps4_auto_requested)
-						ps4_alt_fault_latched = 1U;
+					alt_fault_latched = 1U;
 					++alt_hold_faults;
 				}
 			}
 		}
 
-		(void)DroneLink_SendStatus(&drone_link, roll_deg, pitch_deg, yaw_deg,
-								   motor.m1, motor.m2, motor.m3, motor.m4,
-								   altitude_hold.active,
-								   isfinite(dps310.altitude_rel_m) ? dps310.altitude_rel_m : 0.0f);
+		Send_Status();
 
-		static uint32_t last_log_tick = 0U; /**< Mốc gửi log gần nhất, đơn vị ms; giữ giá trị giữa các vòng lặp. */
-
-		uint32_t log_now = HAL_GetTick();
-		if ((log_now - last_log_tick >= 500U) && (huart1.gState == HAL_UART_STATE_READY))
-		{
-			/** @brief Số ký tự snprintf cần ghi, không tính NUL; chỉ gửi khi bộ đệm đủ chỗ. */
-			int len =
-				snprintf(tx_frame, sizeof(tx_frame),
-						 "thr=%u angle=%.1f,%.1f,%.1f pid=%.1f,%.1f m=%u,%u,%u,%u\r\n"
-						 "LORA T_RX=%lu P_WR=%lu P_RD=%lu TIMEOUT=%lu BAD=%lu"
-						 " RX_BYTE=%lu S_REQ=%lu TX_DMA_START=%lu TX_DMA_DONE=%lu"
-						 " TX_BUSY=%lu TX_ERR=%lu UART_ERR=%lu LINK_TX_BUSY=%lu LINK_TX_FAIL=%lu RX_FIFO_OVF=%lu RX_RESTART=%lu RX_RESTART_ERR=%lu RX_IT_FAIL=%lu TX_STALL=%lu UART_LAST=0x%lX\r\n"
-						 "YAW fused=%.1f mag=%.1f raw_heading=%.1f target=%.1f"
-						 " e=%.1f rate_sp=%.1f gz=%.1f out=%.1f"
-						 " mag_age=%lu ok=%lu err=%lu reject=%lu hold=%u\r\n"
-						 "BARO alt=%.2f P=%.1f T=%.2f home=%u samples=%lu err=%lu age=%lu\r\n"
-						 "ALT req=%u active=%u block=%u cmd=%d target=%.2f height=%.2f vz=%.2f vzsp=%.2f trim=%.0f I=%.0f out=%.0f faults=%lu\r\n",
-						 (unsigned)DroneLink_Throttle(&drone_link),
-						 roll_deg, pitch_deg, yaw_deg, roll_pid, pitch_pid,
-						 (unsigned)motor.m1, (unsigned)motor.m2,
-						 (unsigned)motor.m3, (unsigned)motor.m4,
-						 (unsigned long)drone_link.throttle_rx_count,
-						 (unsigned long)drone_link.pid_write_count,
-						 (unsigned long)drone_link.pid_read_count,
-						 (unsigned long)drone_link.throttle_timeout_count,
-						 (unsigned long)drone_link.rx_invalid_frames,
-						 (unsigned long)drone_link.rx_byte_count,
-						 (unsigned long)drone_link.status_request_count,
-						 (unsigned long)lora.tx_start_count,
-						 (unsigned long)lora.tx_done_count,
-						 (unsigned long)lora.tx_busy_count,
-						 (unsigned long)lora.tx_error_count,
-						 (unsigned long)lora.uart_error_count,
-						 (unsigned long)drone_link.tx_busy_count,
-						 (unsigned long)drone_link.tx_failed_count,
-						 (unsigned long)lora.rx_overflow_count,
-						 (unsigned long)lora.rx_restart_count,
-						 (unsigned long)lora.rx_restart_fail_count,
-						 (unsigned long)lora.rx_rearm_fail_count,
-						 (unsigned long)lora.tx_stall_recover_count,
-						 (unsigned long)lora.last_uart_error, yaw_deg,
-						 mag_yaw_deg, mag_heading_deg, yaw_target_deg,
-						 Yaw_Wrap180(yaw_target_deg - yaw_deg), yaw_rate_sp,
-						 imu.gz_dps, yaw_pid,
-						 (unsigned long)(HAL_GetTick() - mag_last_good_tick),
-						 (unsigned long)mag_ok_count,
-						 (unsigned long)mag_error_count,
-						 (unsigned long)mag_rejected_count,
-						 (unsigned)yaw_target_latched,
-						 dps310.altitude_rel_m, dps310.pressure_pa,
-						 dps310.temperature_c, (unsigned)dps310.home_valid,
-						 (unsigned long)dps310.sample_count,
-						 (unsigned long)dps310.error_count,
-						 (unsigned long)(HAL_GetTick() - dps310.last_update_ms),
-						 (unsigned)drone_link.alt_hold_requested,
-						 (unsigned)altitude_hold.active,
-						 (unsigned)alt_hold_blocked,
-						 (int)DroneLink_ClimbCommand(&drone_link),
-						 altitude_hold.target_m, dps310.altitude_rel_m,
-						 altitude_hold.vz_mps, altitude_hold.vz_setpoint_mps,
-						 altitude_hold.trim_us, altitude_hold.integral_us,
-						 altitude_hold.throttle_us,
-						 (unsigned long)alt_hold_faults);
-
-			if ((len > 0) && ((size_t)len < sizeof(tx_frame)))
-			{
-				if (HAL_UART_Transmit_IT(&huart1, (uint8_t *)tx_frame,
-										 (uint16_t)len) == HAL_OK)
-				{
-					last_log_tick = log_now;
-				}
-			}
-		}
+		/* UART1 RX is reserved for GPS: no outgoing debug logs on this port. */
 
 		/* USER CODE END WHILE */
 
@@ -1173,7 +1110,11 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
-	if (huart->Instance == USART6)
+	if (huart->Instance == USART1)
+	{
+		GPS_RxCpltCallback();
+	}
+	else if (huart->Instance == USART6)
 	{
 		E220_RxCallback(&lora);
 	}
@@ -1189,7 +1130,11 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
-	if (huart->Instance == USART6)
+	if (huart->Instance == USART1)
+	{
+		GPS_ErrorCallback();
+	}
+	else if (huart->Instance == USART6)
 	{
 		E220_ErrorCallback(&lora);
 	}

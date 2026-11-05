@@ -32,7 +32,7 @@ Core/Src/drone_link.o: ../Core/Src/drone_link.c ../Core/Inc/drone_link.h \
  ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_tim_ex.h \
  ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_uart.h \
  ../Core/Inc/angle_controller.h ../Core/Inc/pid.h \
- ../Core/Inc/rate_controller.h
+ ../Core/Inc/rate_controller.h ../Core/Inc/gps.h
 ../Core/Inc/drone_link.h:
 ../Core/Inc/e220.h:
 ../Core/Inc/main.h:
@@ -70,3 +70,4 @@ Core/Src/drone_link.o: ../Core/Src/drone_link.c ../Core/Inc/drone_link.h \
 ../Core/Inc/angle_controller.h:
 ../Core/Inc/pid.h:
 ../Core/Inc/rate_controller.h:
+../Core/Inc/gps.h:

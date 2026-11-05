@@ -1,206 +1,253 @@
 #pragma once
 
 static const char INDEX_HTML[] PROGMEM = R"WEB(
-<!doctype html><html lang="vi"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Drone PID / LoRa E220</title>
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no"/>
+<title>Drone Control</title>
 <style>
-:root{color-scheme:dark;font-family:system-ui,Segoe UI,Arial,sans-serif;background:#10151c;color:#edf3fc}
-*{box-sizing:border-box}body{margin:0 auto;padding:20px 14px 40px;max-width:940px}
-h1{font-size:25px;margin:8px 0 4px}h2{font-size:17px;margin:0 0 16px}
-p,small{color:#aab7c8}p{line-height:1.5;margin:6px 0 18px}
-.panel{background:#1b2531;border:1px solid #2c3b4b;border-radius:14px;padding:18px;margin-top:16px}
-.row{display:flex;gap:12px;flex-wrap:wrap;align-items:center;justify-content:space-between}
-.pill{border:1px solid #52647a;border-radius:30px;padding:6px 12px;font-size:13px}
-button{background:#2b85e4;color:white;border:0;border-radius:8px;padding:11px 16px;font-weight:650;cursor:pointer}
-button.alt{background:#334559}button.stop{background:#b52937}button:disabled{opacity:.4;cursor:default}
-#throttleRange{width:100%;accent-color:#56b1fa;touch-action:pan-y}
-.big{font-size:36px;font-weight:750;font-variant-numeric:tabular-nums}
-.pidrow{display:grid;grid-template-columns:1.5fr repeat(3,minmax(0,1fr));gap:9px;align-items:center;margin:10px 0}
-.pidrow.head{font-size:12px;color:#9eafc4}
-.pidrow input{min-width:0;width:100%;background:#0c131c;color:#fff;border:1px solid #516078;border-radius:6px;padding:10px}
-.statusgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px}
-.metric{background:#111a25;border-radius:8px;padding:12px}
-.metric strong{display:block;font-size:19px;font-variant-numeric:tabular-nums;margin-top:5px}
-.metric strong.rawMessage{font:14px ui-monospace,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;line-height:1.5}
-.err{color:#ffa9ac}.success{color:#9de8b2}#message{min-height:20px}
-@media(max-width:480px){body{padding:12px}.pidrow{gap:5px}.pidrow input{padding:8px 5px}.pidrow div:first-child{font-size:12px}}
-</style></head><body>
-<h1>Drone Control Dashboard</h1>
-<p>ESP32 Wi-Fi (STA) → E220 UART → STM32F401. Thử trên bàn, tháo cánh quạt trước khi tăng xung ESC.</p>
-<div class="row"><span class="pill" id="radio">E220: chưa có phản hồi</span><span class="pill" id="operation">Không có yêu cầu PID</span></div>
-<section class="panel"><h2>Điều khiển ga trực tiếp</h2>
-<div class="row"><div><div class="big"><span id="throttleText">1000</span> <small>µs</small></div><small>1000–1700 µs</small></div>
-<button id="minBtn" class="stop">Đưa ga về 1000 µs</button></div>
-<input id="throttleRange" aria-label="Đặt mức ga" type="range" min="1000" max="1700" value="1000" step="1">
-<div class="row"><small>1000 µs</small><small>1700 µs</small></div>
-<p id="throttleMessage">Gửi trực tiếp T và nhận S phản hồi. Mất tín hiệu sẽ tự về 1000 µs.</p>
-</section>
-<section class="panel"><h2>ALT_HOLD - lên / xuống rồi nhả để giữ</h2>
-<p id="altState">MANUAL</p>
-<p id="climbState">Lệnh lên/xuống: 0 (giữ độ cao)</p>
-<div class="row">
- <button id="holdEnable">Bật ALT_HOLD</button>
- <button id="holdDisable" class="alt">Về MANUAL (cẩn thận thay đổi lực đẩy)</button>
+:root{font-family:system-ui,-apple-system,Segoe UI,Arial,sans-serif;background:#0b1018;color:#e7eef8;color-scheme:dark;--panel:#151e2b;--line:#2b3b4f;--muted:#9aaac0;--accent:#4aa6fa;--red:#ee5969;--green:#76d9b3}
+*{box-sizing:border-box}
+body{margin:0 auto;padding:16px 14px 50px;max-width:900px;line-height:1.45;user-select:none;-webkit-user-select:none;overscroll-behavior:none}
+h2{font-size:15px;margin:0 0 10px}h3{font-size:12px;color:var(--muted);font-weight:650;margin:0 0 8px;text-align:center}
+header{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+h1{margin:0;font-size:22px}.tiny{font-size:11px;color:var(--muted);letter-spacing:.08em;text-transform:uppercase}
+.pill{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:999px;padding:6px 11px;gap:7px;font-size:12px;color:var(--muted)}
+.dot{width:8px;height:8px;border-radius:50%;background:#667489;display:inline-block}.dot.ok{background:var(--green)}
+button{font:inherit;font-weight:650;border:1px solid transparent;cursor:pointer;background:#33465f;color:#fff;border-radius:10px;padding:12px 15px;min-height:48px;touch-action:none}
+button:disabled{opacity:.3;cursor:not-allowed}
+button.primary{background:var(--accent);color:#06121c}
+button.danger{background:#c53649;border-color:#ef6c79;font-size:16px;padding:14px 22px}
+button.hold{background:#244b71;border-color:#3974a9}button.hold.pressed{background:#317eb8}
+.banner{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;background:#4a1d27;border:1px solid #ef6c79;border-radius:12px;padding:12px 14px;margin-bottom:12px}
+.banner[hidden]{display:none}
+.top{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:16px;border:1px solid var(--line);border-radius:16px;background:linear-gradient(135deg,#1a2637,#111a27)}
+.big{font-size:38px;font-weight:780;font-variant-numeric:tabular-nums;letter-spacing:-.03em}
+.pads{display:flex;justify-content:space-around;gap:10px;margin:16px 0 10px}
+.stick{position:relative;width:min(42vw,230px);aspect-ratio:1;border-radius:50%;border:1px solid var(--line);background:radial-gradient(circle,#13202f,#0c1522);touch-action:none;margin:0 auto}
+.stick::before,.stick::after{content:"";position:absolute;background:#243449}
+.stick::before{left:50%;top:8%;bottom:8%;width:1px}.stick::after{top:50%;left:8%;right:8%;height:1px}
+.knob{position:absolute;width:38%;height:38%;left:31%;top:31%;border-radius:50%;background:var(--accent);box-shadow:0 2px 10px #0008;pointer-events:none}
+.row{display:grid;grid-template-columns:2fr 1fr 1fr;gap:10px}
+.msg{min-height:22px;font-size:13px;margin:10px 0;color:var(--muted)}.msg.err{color:#ff99a6}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:8px}
+.panel{border:1px solid var(--line);border-radius:14px;background:var(--panel);padding:14px;min-width:0}.full{grid-column:1/-1}
+.mg{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.metric{padding:10px;background:#0c1522;border-radius:10px;min-width:0}.metric .label{font-size:11px;color:var(--muted)}
+.val{display:block;font-size:16px;font-weight:700;margin-top:3px;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+.raw{font:12px/1.4 ui-monospace,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere;background:#0a1220;padding:8px;border-radius:8px;max-height:70px;overflow:auto}
+a{color:#88c7ff;font-size:13px}a[hidden]{display:none}
+.disabled{opacity:.35;pointer-events:none}
+@media(max-width:640px){.grid{grid-template-columns:1fr}.row{grid-template-columns:1fr 1fr}.row #takeoff{grid-column:1/-1}}
+</style></head>
+<body>
+<header>
+  <div><div class="tiny">ESP32 · LoRa E220 · STM32F401</div><h1>Drone Control</h1></div>
+  <span class="pill"><span id="linkDot" class="dot"></span><span id="linkLabel">Cho telemetry STM32</span></span>
+</header>
+
+<div id="banner" class="banner" hidden>
+  <span id="bannerText">ĐÃ DỪNG</span>
+  <button id="resume" class="primary">KÍCH HOẠT LẠI</button>
 </div>
-<div class="row" style="margin-top:14px">
- <button id="climbUp" style="touch-action:none">GIỮ ĐỂ LÊN</button>
- <button id="climbDown" style="touch-action:none">GIỮ ĐỂ XUỐNG</button>
- <button id="climbRelease" class="alt">NHẢ / GIỮ ĐỘ CAO</button>
-</div>
-<small>Chỉ là giao diện thử nghiệm, không dùng Wi-Fi để điều khiển bay tự do.
-Bật ALT_HOLD sau khi đã lên khỏi mặt đất và có DPS310 hợp lệ.
-Chữ YÊU CẦU không xác nhận STM32 đã vào chế độ; xem log ALT active=1 trên UART.
-Đưa ga về 1000 µs là lệnh dừng motor, KHÔNG phải lệnh giữ độ cao.</small>
+
+<section class="top">
+  <div>
+    <div class="tiny">Độ cao tương đối (DPS310)</div>
+    <div class="big"><span id="height">--</span></div>
+    <span id="holdState" class="pill">--</span>
+  </div>
+  <button id="stop" class="danger">DỪNG KHẨN CẤP</button>
 </section>
-<section class="panel"><h2>Cấu hình 5 bộ PID</h2>
-<div class="pidrow head"><div>Bộ điều khiển</div><div>Kp</div><div>Ki</div><div>Kd</div></div>
-<div id="pidFields"></div><div class="row"><button id="applyBtn">Gửi PID tới drone</button><button id="readBtn" class="alt">Đọc PID từ drone</button></div>
-<p id="message"></p><small>Mỗi lần chỉ gửi một P hoặc G rồi đợi phản hồi A/N/R. ESP32 chèn nhịp ga T giữa các lượt PID, không chèn khi đang chờ ACK. Mất liên lạc vẫn đưa ga về 1000 µs. Chỉ thử với cánh quạt đã tháo.</small>
+
+<section id="controls">
+  <div class="pads">
+    <div><h3>ĐỘ CAO ↕ · YAW ↔</h3><div class="stick" id="stickL"><div class="knob"></div></div></div>
+    <div><h3>PITCH ↕ · ROLL ↔</h3><div class="stick" id="stickR"><div class="knob"></div></div></div>
+  </div>
+  <div class="row">
+    <button id="takeoff" class="primary">CẤT CÁNH (tự giữ LÊN đến khi ALT_HOLD)</button>
+    <button id="up" class="hold">▲ LÊN</button>
+    <button id="down" class="hold">▼ XUỐNG</button>
+  </div>
 </section>
-<section class="panel"><h2>Phản hồi từ STM32</h2><div class="statusgrid">
-<div class="metric">Ga STM32 nhận<strong id="rxThr">--</strong></div>
-<div class="metric">Roll<strong id="rxRoll">--</strong></div>
-<div class="metric">Pitch<strong id="rxPitch">--</strong></div>
-<div class="metric">Yaw<strong id="rxYaw">--</strong></div>
-<div class="metric">M1–M4 (µs)<strong id="rxMotors" style="font-size:14px">--</strong></div>
-</div></section>
-<section class="panel"><h2>Gửi nhận E220</h2><div class="statusgrid">
-<div class="metric">Gói TX UART<strong id="radioTx">0</strong></div>
-<div class="metric">Dòng RX<strong id="radioRx">0</strong></div>
-<div class="metric">Lỗi TX / RX<strong id="radioErrors">0 / 0</strong></div>
-<div class="metric">Lần RX gần nhất<strong id="radioAge">--</strong></div>
-</div><p id="radioReady">Đang đọc trạng thái E220...</p>
-<div class="metric">RX gần nhất<strong id="radioLastRx" class="rawMessage">--</strong></div>
-<div class="metric" style="margin-top:10px">TX gần nhất<strong id="radioLastTx" class="rawMessage">--</strong></div>
-<small>TX qua UART chưa chắc đã tới STM32. Gói S hợp lệ xác nhận đường STM32 → ESP32 hoạt động.</small>
+<div id="note" class="msg">Thả cần/nút = giữ độ cao hiện tại. Thử không gắn cánh trước.</div>
+<p class="msg" id="cmdLine">--</p>
+
+<section class="grid">
+  <div class="panel full">
+    <h2>Trạng thái STM32</h2>
+    <div class="mg">
+      <div class="metric"><div class="label">Roll / Pitch / Yaw</div><strong id="angles" class="val" style="font-size:14px">--</strong></div>
+      <div class="metric"><div class="label">Motor M1–M4 (µs)</div><strong id="motors" class="val" style="font-size:14px">--</strong></div>
+    </div>
+  </div>
+  <div class="panel">
+    <h2>GPS</h2>
+    <div class="mg">
+      <div class="metric"><div class="label">Fix / vệ tinh</div><strong id="gpsFix" class="val">--</strong></div>
+      <div class="metric"><div class="label">Tốc độ / course</div><strong id="gpsMotion" class="val" style="font-size:14px">--</strong></div>
+    </div>
+    <div class="metric" style="margin-top:8px"><div class="label">Vĩ độ / kinh độ</div><strong id="gpsCoords" class="val" style="font-size:14px">--</strong></div>
+    <a id="gpsMap" target="_blank" rel="noopener noreferrer" hidden>Xem trên OpenStreetMap</a>
+  </div>
+  <div class="panel">
+    <h2>LoRa E220</h2>
+    <div class="mg">
+      <div class="metric"><div class="label">TX / RX</div><strong id="txrx" class="val">0 / 0</strong></div>
+      <div class="metric"><div class="label">S hợp lệ / lỗi</div><strong id="goodbad" class="val">0 / 0</strong></div>
+      <div class="metric"><div class="label">Tuổi status</div><strong id="statusAge" class="val">--</strong></div>
+      <div class="metric"><div class="label">AUX / lỗi RX</div><strong id="uartErrors" class="val">--</strong></div>
+    </div>
+    <h3 style="margin-top:10px;text-align:left">Gói gửi gần nhất</h3><div id="lastTx" class="raw">--</div>
+    <h3 style="margin-top:8px;text-align:left">Gói nhận gần nhất</h3><div id="lastRx" class="raw">--</div>
+  </div>
 </section>
+
 <script>
-const names=['Angle Roll','Angle Pitch','Rate Roll','Rate Pitch','Rate Yaw'];
+// Neu huong nghieng/yaw bi nguoc so voi chieu lap IMU, doi true/false o day.
+const INVERT={roll:false,pitch:false,yaw:false};
+const LIM={roll:12,pitch:12,yaw:60};          // khop gioi han ESP32
+const TAKEOFF_MAX_MS=15000;
+
 const el=id=>document.getElementById(id);
-const fields=el('pidFields');
-names.forEach((name,i)=>{
- const row=document.createElement('div');row.className='pidrow';
- const label=document.createElement('div');label.textContent=name;row.appendChild(label);
- ['kp','ki','kd'].forEach(k=>{
-  const input=document.createElement('input');input.id=`pid_${i}_${k}`;input.type='number';input.min='0';input.max='100';input.step='0.001';input.value='0';row.appendChild(input);
- });fields.appendChild(row);
-});
-const slider=el('throttleRange');
-let altRequested=false;
-let climbTimer=null;
-let pendingAlt=null;
-let sendingAlt=false;
-/* One HTTP request at a time, replace outdated pending actions.
-   Prevents a delayed LÊN packet being queued AFTER a release. */
-async function sendAlt(enable, climb){
- pendingAlt={enable:!!enable,climb};
- if(sendingAlt) return;
- sendingAlt=true;
- try {
-  while(pendingAlt!==null){
-   const action=pendingAlt;
-   pendingAlt=null;
-   await post('/api/althold',{enable:action.enable?1:0,climb:action.climb});
-   altRequested=action.enable;
+let st=null;                     // /api/state moi nhat
+let L={x:0,y:0}, R={x:0,y:0};    // joystick trai/phai, -1..1 (y>0 la keo xuong)
+let btn=0, takeoff=false, takeoffT=0;
+
+const note=(s,err=false)=>{el('note').textContent=s;el('note').className=err?'msg err':'msg';};
+const dz=(v,d=.12)=>Math.abs(v)<d?0:(v-Math.sign(v)*d)/(1-d);
+const sg=f=>f?-1:1;
+
+// ---- Gop moi nguon dieu khien thanh 1 trang thai ----
+function compose(){
+  if(document.hidden||!st||st.stopped)return{climb:0,roll:0,pitch:0,yaw:0};
+  let climb=Math.round(-dz(L.y)*100);
+  if(btn)climb=btn;
+  const active=!!(st.status&&st.status.altActive);
+  if(takeoff){
+    if(active||climb<0||Date.now()-takeoffT>TAKEOFF_MAX_MS)takeoff=false;
+    else if(climb===0)climb=100;
   }
- } catch(e) {
-  pendingAlt=null;
-  note(e.message,true);
- } finally { sendingAlt=false; }
+  return{
+    climb,
+    roll:Math.round(dz(R.x)*LIM.roll*sg(INVERT.roll)),
+    pitch:Math.round(-dz(R.y)*LIM.pitch*sg(INVERT.pitch)),
+    yaw:Math.round(dz(L.x)*LIM.yaw*sg(INVERT.yaw))
+  };
 }
-function stopClimb(){
- if(climbTimer!==null){clearInterval(climbTimer);climbTimer=null;}
- if(altRequested) sendAlt(true,0);
+
+async function post(url,body={}){
+  const ac=new AbortController();const t=setTimeout(()=>ac.abort(),2000);
+  try{
+    const r=await fetch(url,{method:'POST',signal:ac.signal,
+      headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(body)});
+    const j=await r.json();
+    if(!r.ok||!j.ok)throw Error(j.error||('HTTP '+r.status));
+    return j;
+  }finally{clearTimeout(t);}
 }
-function bindClimb(id, value){
- const b=el(id);
- b.addEventListener('pointerdown', ev=>{
-   ev.preventDefault();
-   if(!altRequested) return;
-   b.setPointerCapture(ev.pointerId);
-   if(climbTimer!==null){clearInterval(climbTimer);climbTimer=null;}
-   sendAlt(true,value);
-   climbTimer=setInterval(()=>sendAlt(true,value),250);
- });
- ['pointerup','pointercancel','lostpointercapture'].forEach(name=>
-     b.addEventListener(name,stopClimb));
+
+// Chi 1 request /api/ctrl cung luc; neu co thay doi trong luc cho thi gui lai ban moi nhat.
+let inflight=false,dirty=false;
+async function send(){
+  if(st&&st.stopped)return;
+  if(inflight){dirty=true;return;}
+  inflight=true;
+  try{do{dirty=false;await post('/api/ctrl',compose());}while(dirty);}
+  catch(e){note(e.message,true);}
+  finally{inflight=false;}
 }
-el('holdEnable').onclick=()=>sendAlt(true,0);
-el('holdDisable').onclick=()=>{stopClimb();sendAlt(false,0);};
-el('climbRelease').onclick=stopClimb;
-bindClimb('climbUp',100);
-bindClimb('climbDown',-100);
-window.addEventListener('blur',stopClimb);
-document.addEventListener('visibilitychange',()=>{
- if(document.hidden) stopClimb();
-});
-let pidEditing=false,lastPIDKey='',timer=null,lastOp='';
-function note(t,error=false){el('message').textContent=t;el('message').className=error?'err':'success';}
-async function post(url,values={}){
- const res=await fetch(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(values)});
- const data=await res.json();if(!res.ok||!data.ok)throw new Error(data.error||`HTTP ${res.status}`);return data;
+setInterval(send,250);   // heartbeat: ESP32 se ve 0 neu im >800 ms
+
+// ---- Joystick ao ----
+function makeStick(root,onChange){
+  const knob=root.querySelector('.knob');let id=null;
+  const show=(x,y)=>{const r=root.clientWidth*.31;knob.style.transform=`translate(${x*r}px,${y*r}px)`;};
+  const set=(x,y)=>{show(x,y);onChange(x,y);send();};
+  const move=e=>{
+    const b=root.getBoundingClientRect(),r=b.width*.31;
+    let x=(e.clientX-(b.left+b.width/2))/r,y=(e.clientY-(b.top+b.height/2))/r;
+    const m=Math.hypot(x,y);if(m>1){x/=m;y/=m;}
+    set(x,y);
+  };
+  root.addEventListener('pointerdown',e=>{e.preventDefault();id=e.pointerId;try{root.setPointerCapture(id);}catch(_){}move(e);});
+  root.addEventListener('pointermove',e=>{if(e.pointerId===id)move(e);});
+  const end=e=>{if(e.pointerId===id||e.type==='lostpointercapture'){id=null;set(0,0);}};
+  for(const n of['pointerup','pointercancel','lostpointercapture'])root.addEventListener(n,end);
 }
-async function setThrottle(value){
- try{await post('/api/throttle',{throttle:value});}catch(e){note(e.message,true);}
+makeStick(el('stickL'),(x,y)=>{L={x,y};});
+makeStick(el('stickR'),(x,y)=>{R={x,y};});
+
+// ---- Nut LEN / XUONG: giu de di chuyen, tha de giu do cao ----
+function holdBtn(b,v){
+  b.addEventListener('pointerdown',e=>{
+    e.preventDefault();btn=v;b.classList.add('pressed');
+    try{b.setPointerCapture(e.pointerId);}catch(_){}
+    send();
+  });
+  const off=()=>{if(btn===v){btn=0;b.classList.remove('pressed');send();}};
+  for(const n of['pointerup','pointercancel','lostpointercapture'])b.addEventListener(n,off);
 }
-slider.addEventListener('input',()=>{
- el('throttleText').textContent=slider.value;
- clearTimeout(timer);
- timer=setTimeout(()=>setThrottle(slider.value),100);
-});
-slider.addEventListener('change',()=>{clearTimeout(timer);setThrottle(slider.value);});
-el('minBtn').onclick=()=>{
- clearTimeout(timer);slider.value='1000';el('throttleText').textContent='1000';setThrottle(1000);
+holdBtn(el('up'),100);
+holdBtn(el('down'),-100);
+
+el('takeoff').onclick=()=>{
+  if(takeoff){takeoff=false;}else{takeoff=true;takeoffT=Date.now();}
+  send();
 };
-el('applyBtn').onclick=async()=>{
- const values={};for(let i=0;i<5;i++)for(const key of ['kp','ki','kd'])values[`${i}_${key}`]=el(`pid_${i}_${key}`).value;
- try{await post('/api/pids',values);note('Đang gửi PID và chờ phản hồi A/N...');}catch(e){note(e.message,true);}
+
+el('stop').onclick=async()=>{
+  takeoff=false;btn=0;L={x:0,y:0};R={x:0,y:0};
+  try{await post('/api/stop');note('Đã gửi DỪNG. Chờ STM32 xác nhận (thr=1000).');}
+  catch(e){note('Chưa xác nhận dừng: '+e.message,true);}
 };
-el('readBtn').onclick=async()=>{
- try{await post('/api/readpid');note('Đang đọc 5 bộ PID (G → R)...');}catch(e){note(e.message,true);}
+el('resume').onclick=async()=>{
+  try{await post('/api/resume');note('Đã kích hoạt lại. Cất cánh bằng nút CẤT CÁNH.');}
+  catch(e){note(e.message,true);}
 };
+
+// ---- Hien thi trang thai ----
+function render(d){
+  const s=d.status||null,radio=d.radio||{},linked=!!d.link,active=!!(s&&s.altActive);
+  el('linkDot').className=linked?'dot ok':'dot';
+  el('linkLabel').textContent=linked?'Đã nhận status STM32':'Mất/chưa có telemetry STM32';
+  el('banner').hidden=!d.stopped;
+  if(d.stopped)el('bannerText').textContent='ĐÃ DỪNG · '+(d.stopReason||'');
+  el('controls').classList.toggle('disabled',!!d.stopped);
+  if(active&&takeoff)takeoff=false;
+  el('height').textContent=linked&&s?s.altitudeM.toFixed(2)+' m':'--';
+  const exitText=s&&s.altExit===1?'Đã hạ cánh':(s&&s.altExitText)||'';
+  el('holdState').textContent=!linked?'Không có telemetry':active?'ALT_HOLD ĐANG GIỮ ĐỘ CAO':'Trên mặt đất / chưa cất cánh'+(exitText?' · '+exitText:'')+(s?' · ga '+s.throttle+' µs':'');
+  el('takeoff').textContent=takeoff?'HUỶ CẤT CÁNH':'CẤT CÁNH (tự giữ LÊN đến khi ALT_HOLD)';
+  el('takeoff').disabled=!linked||active;
+  el('up').disabled=!linked;
+  el('down').disabled=!linked||!active;
+  el('angles').textContent=linked&&s?[s.roll,s.pitch,s.yaw].map(x=>Number(x).toFixed(1)+'°').join(' / '):'--';
+  el('motors').textContent=linked&&s?s.motors.join(' / '):'--';
+  el('cmdLine').textContent='Lệnh gửi: climb '+d.climb+'% · roll '+d.rollCommand+'° · pitch '+d.pitchCommand+'° · yaw '+d.yawRateCommand+'°/s';
+  el('gpsFix').textContent=linked&&s?(s.gpsFix?'Có · '+s.gpsSatellites+' vệ tinh':'Chưa FIX'):'--';
+  el('gpsMotion').textContent=linked&&s&&s.gpsFix?s.gpsSpeedKmh.toFixed(1)+' km/h / '+s.gpsCourseDeg.toFixed(1)+'°':'--';
+  el('gpsCoords').textContent=linked&&s&&s.gpsFix?s.gpsLat.toFixed(6)+', '+s.gpsLon.toFixed(6):'--';
+  const map=el('gpsMap');map.hidden=!(linked&&s&&s.gpsFix);
+  if(!map.hidden)map.href='https://www.openstreetmap.org/?mlat='+s.gpsLat+'&mlon='+s.gpsLon+'#map=17/'+s.gpsLat+'/'+s.gpsLon;
+  el('txrx').textContent=(radio.txCount||0)+' / '+(radio.rxCount||0);
+  el('goodbad').textContent=(d.statusValidCount||0)+' / '+(d.statusInvalidCount||0);
+  el('statusAge').textContent=d.statusAgeMs===null?'--':(d.statusAgeMs/1000).toFixed(1)+' s';
+  el('uartErrors').textContent=(radio.auxReady?'HIGH':'LOW')+' / '+(radio.rxErrors||0);
+  el('lastTx').textContent=radio.lastTx||'--';
+  el('lastRx').textContent=radio.lastRx||'--';
+}
+
 async function refresh(){
- try{
-  const r=await fetch('/api/state',{cache:'no-store'});if(!r.ok)throw new Error(`HTTP ${r.status}`);
-  const d=await r.json(),radio=d.radio||{};
-  altRequested=!!d.altHoldRequested;
-  el('altState').textContent=altRequested?'Đang YÊU CẦU ALT_HOLD':'MANUAL';
-  const cmd=Number(d.altHoldClimb??0);
-  el('climbState').textContent=cmd>0?'Lệnh: LÊN':cmd<0?'Lệnh: XUỐNG':'Lệnh: 0 (giữ độ cao)';
-  el('applyBtn').disabled=altRequested;
-  el('readBtn').disabled=altRequested;
-  slider.disabled=altRequested;
-  const recentRx=radio.rxAgeMs!=null&&radio.rxAgeMs<=4500;
-  el('radio').textContent=d.link?'E220: có status STM32':recentRx?'E220: có RX, chờ status':'E220: chưa có status';
-  el('radioTx').textContent=radio.txCount??0;el('radioRx').textContent=radio.rxCount??0;
-  el('radioErrors').textContent=(radio.txErrors??0)+' / '+(radio.rxErrors??0);
-  el('radioAge').textContent=radio.rxAgeMs==null?'--':(radio.rxAgeMs/1000).toFixed(1)+' giây trước';
-  el('radioLastRx').textContent=radio.lastRx||'--';el('radioLastTx').textContent=radio.lastTx||'--';
-  el('radioReady').textContent=radio.auxConnected?(radio.auxReady?'AUX HIGH; UART có thể gửi.':'E220 đang bận (AUX LOW).'):'AUX không nối; truyền theo khoảng nghỉ cố định.';
-  el('operation').textContent=d.operation;
-  if(d.operation!==lastOp){
-    if(d.operation.startsWith('Đã đọc PID')||d.operation.startsWith('Đã gửi PID')){
-      pidEditing=false;note(d.operation);
-    }else if(d.operation.startsWith('Lỗi')||d.operation.startsWith('STM32 từ chối'))note(d.operation,true);
-    lastOp=d.operation;
-  }
-  el('throttleMessage').textContent=d.link?'Đã có phản hồi status S hợp lệ.':`Chưa có status S mới. ${d.statusDiagnostic||''}`;
-  el('throttleMessage').className=d.link?'success':'err';
-  if(document.activeElement!==slider){slider.value=d.throttle;el('throttleText').textContent=d.throttle;}
-  if(d.status){const s=d.status;
-   el('rxThr').textContent=s.throttle+' µs';
-   el('rxRoll').textContent=s.roll.toFixed(1)+'°';el('rxPitch').textContent=s.pitch.toFixed(1)+'°';
-   el('rxYaw').textContent=s.yaw.toFixed(1)+'°';el('rxMotors').textContent=s.motors.join(' / ');
-  }
-  const pidKey=JSON.stringify(d.pids);
-  if(!pidEditing&&lastPIDKey!==pidKey){
-    d.pids.forEach((p,i)=>['kp','ki','kd'].forEach(k=>el(`pid_${i}_${k}`).value=p[k]));
-    lastPIDKey=pidKey;
-  }
- }catch(e){el('radio').textContent='ESP32: lỗi kết nối';el('throttleMessage').textContent='Không tải được trạng thái: '+e.message;el('throttleMessage').className='err';}
+  try{
+    const r=await fetch('/api/state',{cache:'no-store'});
+    if(!r.ok)throw Error('HTTP '+r.status);
+    st=await r.json();render(st);
+  }catch(e){el('linkDot').className='dot';el('linkLabel').textContent='Không đọc được ESP32';}
+  setTimeout(refresh,500);
 }
-fields.addEventListener('input',()=>{pidEditing=true;});
-refresh();setInterval(refresh,500);
-</script></body></html>
+refresh();
+</script>
+</body></html>
 )WEB";
