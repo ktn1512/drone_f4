@@ -116,17 +116,36 @@ static uint32_t alt_hold_faults = 0U;
 static uint8_t auto_was_requested = 0U;
 static uint8_t alt_fault_latched = 0U;
 static uint8_t armed = 0U;
-static float ground_alt_m = 0.0f;  /* do cao baro luc cat canh */
+static float ground_alt_m = 0.0f; /* do cao baro luc cat canh */
 static uint32_t land_since_ms = 0U;
-static int16_t climb_cmd = 0;	   /* climb thuc dung (co failsafe) */
+static int16_t climb_cmd = 0;					  /* climb thuc dung (co failsafe) */
 volatile uint8_t alt_exit_reason = ALT_EXIT_NONE; /* AltExitReason_t, gui trong goi S */
-#define AUTO_IDLE_US 1150.0f		/* quay khong tai luc vua arm tren mat dat */
-#define AUTO_HOVER_GUESS_US 1350.0f /* uoc luong ga treo, PID tu hoc them */
+#define AUTO_IDLE_US 1150.0f					  /* quay khong tai luc vua arm tren mat dat */
+#define AUTO_HOVER_GUESS_US 1350.0f				  /* uoc luong ga treo, PID tu hoc them */
 #define LAND_BAND_M 0.15f
 #define LAND_CONFIRM_MS 1000U
 /* Phai lon hon DRONE_LINK_CLIMB_TIMEOUT_MS (mat 1 goi S khong duoc kich failsafe). */
 #define LINK_LOST_MS 3000U
-#define FAILSAFE_CLIMB (-40)
+
+#define FAILSAFE_CLIMB (-60) /* 0.24 m/s, nhanh hon ro rang so voi nguong dung yen */
+/* Phat hien cham dat: van toc gan 0 VA ga thap hon ga treo da hoc. */
+#define LAND_STILL_MPS 0.06f		 /* tren van toc da loc cham (tau ~0.5 s) */
+#define LAND_THR_DROP_US 40.0f		 /* kem near_ground */
+#define LAND_THR_DROP_HARD_US 150.0f /* khong can baro: ga thap the nay ma dung yen = da cham dat */
+static float hover_ref_us = AUTO_HOVER_GUESS_US;
+static float land_vz_lpf = 0.0f;
+/* Ha canh khan cap vong ho khi baro/ALT_HOLD loi giua troi: KHONG cat motor. */
+#define EMERG_START_DROP_US 25.0f
+#define EMERG_RAMP_US_PER_S 3.0f
+#define EMERG_ASSUMED_MPS 0.30f
+#define EMERG_EXTRA_MS 6000U
+#define EMERG_MAX_MS 30000U
+static uint8_t emerg_active = 0U;
+static float emerg_start_thr_us = 0.0f;
+static uint32_t emerg_start_ms = 0U, emerg_duration_ms = 0U;
+/* Mat IMU lien tiep -> cat motor (khong giu PWM cu). 10 lan ~ 20 ms. */
+#define IMU_FAIL_CUT_COUNT 10U
+static uint32_t imu_fail_count = 0U;
 
 /*Bộ lọc mahony*/
 Mahony_t mahony;
@@ -246,6 +265,51 @@ static void Send_Status(void)
 							   altitude_hold.active,
 							   isfinite(dps310.altitude_rel_m) ? dps310.altitude_rel_m : 0.0f,
 							   alt_exit_reason);
+}
+
+/* Baro/ALT_HOLD loi khi dang bay: giu ga treo da hoc tru mot chut, giam dan,
+ * het thoi gian uoc luong thi tat. Goi TRUOC khi AltitudeHold_Reset. */
+static void Emergency_Begin(uint8_t reason, uint32_t now_ms)
+{
+	if (!altitude_hold.active)
+		return;
+	float hover = altitude_hold.trim_us + altitude_hold.integral_us;
+	if (!isfinite(hover))
+		hover = AUTO_HOVER_GUESS_US;
+	float thr = hover - EMERG_START_DROP_US;
+	if (thr < AUTO_IDLE_US)
+		thr = AUTO_IDLE_US;
+	if (thr > 1650.0f)
+		thr = 1650.0f;
+	/* target_m la do cao cuoi cung con tin duoc (altitude_m co the la mau loi). */
+	float h = altitude_hold.target_m - ground_alt_m;
+	if (!isfinite(h) || h < 0.0f)
+		h = 0.0f;
+	if (h > 20.0f)
+		h = 20.0f;
+	emerg_start_thr_us = thr;
+	emerg_duration_ms = (uint32_t)(h / EMERG_ASSUMED_MPS * 1000.0f) + EMERG_EXTRA_MS;
+	if (emerg_duration_ms > EMERG_MAX_MS)
+		emerg_duration_ms = EMERG_MAX_MS;
+	emerg_start_ms = now_ms;
+	emerg_active = 1U;
+	land_since_ms = 0U;
+	alt_exit_reason = reason;
+	AltitudeHold_Reset(&altitude_hold);
+}
+
+static float Emergency_Throttle(uint32_t now_ms)
+{
+	const uint32_t elapsed = now_ms - emerg_start_ms;
+	if (elapsed >= emerg_duration_ms)
+	{
+		emerg_active = 0U;
+		armed = 0U;
+		alt_exit_reason = ALT_EXIT_EMERG_LANDED;
+		return 1000.0f;
+	}
+	float thr = emerg_start_thr_us - EMERG_RAMP_US_PER_S * ((float)elapsed * 0.001f);
+	return (thr < AUTO_IDLE_US) ? AUTO_IDLE_US : thr;
 }
 
 /* Chuẩn góc yaw 0..360 và sai số ngắn nhất -180..180 (độ). */
@@ -523,10 +587,24 @@ int main(void)
 
 		if (ICM42670_ReadAll(&imu) != ICM42670_OK)
 		{
+			if (++imu_fail_count >= IMU_FAIL_CUT_COUNT)
+			{
+				/* Khong co IMU = khong giu duoc tu the: khong de PWM cu chay mai. */
+				if (altitude_hold.active || emerg_active || armed)
+					alt_exit_reason = ALT_EXIT_IMU;
+				AltitudeHold_Reset(&altitude_hold);
+				emerg_active = 0U;
+				armed = 0U;
+				alt_fault_latched = 1U;
+				throttle = 1000.0f;
+				motor.m1 = motor.m2 = motor.m3 = motor.m4 = 1000U;
+				Motors_Write();
+			}
 			last_control_cycles = last_sample_cycles = DWT->CYCCNT;
 			Send_Status();
 			continue;
 		}
+		imu_fail_count = 0U;
 
 		/* dt là khoảng cách giữa các mẫu đã đọc xong, kể cả trễ SPI thực tế. */
 		uint32_t sample_cycles = DWT->CYCCNT;
@@ -572,6 +650,7 @@ int main(void)
 				armed = 0U;
 				alt_fault_latched = 0U;
 				land_since_ms = 0U;
+				emerg_active = 0U;
 			}
 			/* Failsafe: mat T qua LINK_LOST_MS -> tu ha cham, KHONG cat motor giua troi. */
 			const uint8_t link_lost =
@@ -580,16 +659,25 @@ int main(void)
 								  : DroneLink_ClimbCommand(&drone_link);
 
 			if (!baro_healthy && altitude_hold.active)
-				alt_fault_latched = 1U;
-
-			if (!baro_healthy || alt_fault_latched)
 			{
-				if (altitude_hold.active)
-				{
-					++alt_hold_faults;
-					alt_exit_reason = alt_fault_latched ? ALT_EXIT_BARO_LATCHED
-														: ALT_EXIT_BARO;
-				}
+				/* Baro hong GIUA TROI: ha canh khan cap, KHONG cat motor. */
+				alt_fault_latched = 1U;
+				++alt_hold_faults;
+				Emergency_Begin(ALT_EXIT_BARO_LATCHED, alt_now_ms);
+			}
+
+			// if (!baro_healthy || alt_fault_latched)
+			if (emerg_active)
+			{
+				// if (altitude_hold.active)
+				// {
+				// 	++alt_hold_faults;
+				// 	alt_exit_reason = alt_fault_latched ? ALT_EXIT_BARO_LATCHED
+				// 										: ALT_EXIT_BARO;
+				// }
+			}
+			else if (!baro_healthy || alt_fault_latched)
+			{
 				AltitudeHold_Reset(&altitude_hold);
 				armed = 0U;
 			}
@@ -607,6 +695,8 @@ int main(void)
 					/* Bat giu do cao ngay tu mat dat, khong cho 0.3 m. */
 					ground_alt_m = dps310.altitude_rel_m;
 					land_since_ms = 0U;
+					hover_ref_us = AUTO_HOVER_GUESS_US;
+					land_vz_lpf = 0.0f;
 					if (AltitudeHold_Start(&altitude_hold, dps310.altitude_rel_m,
 										   AUTO_HOVER_GUESS_US, dps310.last_update_ms))
 					{
@@ -621,7 +711,20 @@ int main(void)
 				 * Bam LEN lai se tu arm + cat canh, khong can KICH HOAT LAI. */
 				const uint8_t near_ground =
 					(dps310.altitude_rel_m - ground_alt_m) < LAND_BAND_M;
-				if (climb_cmd < 0 && near_ground)
+				// if (climb_cmd < 0 && near_ground)
+				/* vz baro nhieu +-0.1 m/s ngay ca khi nam yen: loc them truoc khi so. */
+				land_vz_lpf += 0.004f * (altitude_hold.vz_mps - land_vz_lpf);
+				const uint8_t still = fabsf(land_vz_lpf) < LAND_STILL_MPS;
+				/* Hoc ga treo khi dang dung yen o do cao (tau ~1 s o 500 Hz). */
+				if (climb_cmd == 0 && fabsf(altitude_hold.vz_mps) < 0.10f)
+					hover_ref_us += 0.002f * (altitude_hold.throttle_us - hover_ref_us);
+				const float thr_drop = hover_ref_us - altitude_hold.throttle_us;
+				/* Chi baro gan dat la chua du (baro troi +-0.3 m): phai dung yen
+				 * VA ga da tut duoi ga treo, tuc la mat dat dang do drone. */
+				const uint8_t landed_like = still &&
+											((near_ground && thr_drop > LAND_THR_DROP_US) ||
+											 thr_drop > LAND_THR_DROP_HARD_US);
+				if (climb_cmd < 0 && landed_like)
 				{
 					if (land_since_ms == 0U)
 						land_since_ms = alt_now_ms | 1U;
@@ -637,8 +740,13 @@ int main(void)
 				else
 					land_since_ms = 0U;
 			}
-			throttle = altitude_hold.active ? altitude_hold.throttle_us
-											: (armed ? AUTO_IDLE_US : 1000.0f);
+			// throttle = altitude_hold.active ? altitude_hold.throttle_us
+			// 								: (armed ? AUTO_IDLE_US : 1000.0f);
+			if (emerg_active)
+				throttle = Emergency_Throttle(alt_now_ms);
+			else
+				throttle = altitude_hold.active ? altitude_hold.throttle_us
+												: (armed ? AUTO_IDLE_US : 1000.0f);
 		}
 		else
 		{
@@ -650,6 +758,7 @@ int main(void)
 			armed = 0U;
 			alt_fault_latched = 0U;
 			land_since_ms = 0U;
+			emerg_active = 0U; /* DUNG = kill switch, cat ngay ca khi dang ha khan cap */
 			climb_cmd = 0;
 			throttle = 1000.0f;
 		}
@@ -702,6 +811,15 @@ int main(void)
 		else
 		{
 			motor.m1 = motor.m2 = motor.m3 = motor.m4 = 1000U;
+			/* Motor dung: lan len ga sau chot lai huong HIEN TAI va xoa
+			 * tich phan/D cu, khong mang trang thai chuyen bay truoc. */
+			yaw_target_latched = 0U;
+			PID_Reset(&angle_ctrl.roll);
+			PID_Reset(&angle_ctrl.pitch);
+			PID_Reset(&angle_ctrl.yaw);
+			PID_Reset(&rate_ctrl.roll);
+			PID_Reset(&rate_ctrl.pitch);
+			PID_Reset(&rate_ctrl.yaw);
 		}
 
 		Motors_Write();
@@ -719,10 +837,11 @@ int main(void)
 				if (!AltitudeHold_Update(&altitude_hold, dps310.altitude_rel_m,
 										 dps310.last_update_ms, climb_cmd))
 				{
-					alt_exit_reason = ALT_EXIT_UPDATE_FAULT;
-					AltitudeHold_Reset(&altitude_hold);
+					// alt_exit_reason = ALT_EXIT_UPDATE_FAULT;
+					// AltitudeHold_Reset(&altitude_hold);
 					alt_fault_latched = 1U;
 					++alt_hold_faults;
+					Emergency_Begin(ALT_EXIT_UPDATE_FAULT, baro_now_ms);
 				}
 			}
 		}

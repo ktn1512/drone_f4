@@ -7,7 +7,8 @@
 
 #define E22_RX_BUFFER_SIZE 256
 
-typedef struct {
+typedef struct
+{
 	UART_HandleTypeDef *huart;
 
 	uint8_t rx_byte;

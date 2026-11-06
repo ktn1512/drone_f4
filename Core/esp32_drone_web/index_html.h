@@ -129,10 +129,15 @@ function compose(){
     if(active||climb<0||Date.now()-takeoffT>TAKEOFF_MAX_MS)takeoff=false;
     else if(climb===0)climb=100;
   }
+   // IMU lap xoay 90 do so voi khung:
+  //   roll FC  + = ngoc dau len  -> bay TOI can roll AM
+  //   pitch FC + = nghieng phai  -> bay PHAI can pitch DUONG
+  const fwd = -dz(R.y);    // day can len = +1 (y man hinh huong xuong)
+  const right = dz(R.x);   // keo can sang phai = +1
   return{
     climb,
-    roll:Math.round(dz(R.x)*LIM.roll*sg(INVERT.roll)),
-    pitch:Math.round(-dz(R.y)*LIM.pitch*sg(INVERT.pitch)),
+    roll:Math.round(-fwd*LIM.roll*sg(INVERT.roll)),
+    pitch:Math.round(right*LIM.pitch*sg(INVERT.pitch)),
     yaw:Math.round(dz(L.x)*LIM.yaw*sg(INVERT.yaw))
   };
 }

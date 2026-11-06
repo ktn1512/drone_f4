@@ -31,7 +31,9 @@ typedef enum
     ALT_EXIT_BARO_LATCHED = 3,    /* loi baro da chot, cho lenh mode moi */
     ALT_EXIT_UPDATE_FAULT = 4,    /* AltitudeHold_Update tu choi mau */
     ALT_EXIT_FAILSAFE_LANDED = 5, /* mat link, tu ha cham va da cham dat */
-    ALT_EXIT_STOPPED = 6          /* ESP gui T mode 0 (DUNG) */
+    ALT_EXIT_STOPPED = 6,         /* ESP gui T mode 0 (DUNG) */
+    ALT_EXIT_EMERG_LANDED = 7,    /* ha canh khan cap vong ho (baro loi) da xong */
+    ALT_EXIT_IMU = 8              /* mat IMU, da cat motor */
 } AltExitReason_t;
 
 typedef struct
