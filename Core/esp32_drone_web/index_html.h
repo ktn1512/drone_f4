@@ -163,7 +163,7 @@ async function send(){
   catch(e){note(e.message,true);}
   finally{inflight=false;}
 }
-setInterval(send,250);   // heartbeat: ESP32 se ve 0 neu im >800 ms
+setInterval(send,250);   // heartbeat: ESP32 se ve 0 neu im >1500 ms (COMMAND_HEARTBEAT_MS)
 
 // ---- Joystick ao ----
 function makeStick(root,onChange){
@@ -223,8 +223,10 @@ function render(d){
   if(active&&takeoff)takeoff=false;
   el('height').textContent=linked&&s?s.altitudeM.toFixed(2)+' m':'--';
   const exitText=s&&s.altExit===1?'Đã hạ cánh':(s&&s.altExitText)||'';
-  el('holdState').textContent=!linked?'Không có telemetry':active?'ALT_HOLD ĐANG GIỮ ĐỘ CAO':'Trên mặt đất / chưa cất cánh'+(exitText?' · '+exitText:'')+(s?' · ga '+s.throttle+' µs':'');
-  el('takeoff').textContent=takeoff?'HUỶ CẤT CÁNH':'CẤT CÁNH (tự giữ LÊN đến khi ALT_HOLD)';
+  const fsText=(s&&s.flightStateText)||'';
+  el('holdState').textContent=!linked?'Không có telemetry':(active?fsText.toUpperCase():'Trên mặt đất / chưa cất cánh'+(exitText?' · '+exitText:''))+(s?' · ga '+s.throttle+' µs':'');
+  // STM32 tu cat canh toi ~0.5 m sau khi nhan climb>0: nut chi can gui LEN ngan.
+  el('takeoff').textContent=takeoff?'HUỶ CẤT CÁNH':'CẤT CÁNH (STM32 tự lên ~0.5 m)';
   el('takeoff').disabled=!linked||active;
   el('up').disabled=!linked;
   el('down').disabled=!linked||!active;

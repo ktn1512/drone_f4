@@ -1,40 +1,49 @@
-/* Lien ket LoRa: chi T/S ASCII + *checksum XOR. */
+/* Lien ket LoRa: T (ESP->STM) va S/G/M (STM->ESP) ASCII + *checksum XOR.
+ * Giao thuc v2 (rut gon goi tra loi de giam thoi gian phat song):
+ *   S,seq,thr,roll10,pitch10,yaw,fs,alt_cm,exit          (~30-40 byte)
+ *   G,seq,fix,lat,lon,speed10_kmh,course,sats            (~25-50 byte)
+ *   M,seq,m1,m2,m3,m4,rxT,rxBad,late,uerr,rxovf          (~45-55 byte)
+ * Moi T chi duoc tra loi DUNG MOT goi: chu ky S,S,G,S,M (xem
+ * DRONE_LINK_REPLY_CYCLE). Phai khop esp32_drone_web.ino. */
 #ifndef DRONE_LINK_H
 #define DRONE_LINK_H
 
 #include "e220.h"
 #include "angle_controller.h"
 #include "rate_controller.h"
+#include "flight_mode.h" /* AltExitReason_t, FlightState_t */
 #include <stdbool.h>
 #include <stdint.h>
 
 #define DRONE_LINK_MIN_THR 1000U
 #define DRONE_LINK_MAX_THR 1700U
 #define DRONE_LINK_TIMEOUT_MS 4500U
-/* Phai lon hon khoang cach 2 lenh T khi mat 1 goi S:
- * ESP REPLY_TIMEOUT_MS 1800 + guard 20 + ~150 ms truyen T ~= 1.97 s.
- * Doi REPLY_TIMEOUT_MS ben ESP32 thi phai doi lai so nay. */
-#define DRONE_LINK_CLIMB_TIMEOUT_MS 2200U
+/* Rang buoc thoi gian (RTT do duoc voi goi S cu 86 byte: ~1185 ms;
+ * goi tra loi v2 <= ~55 byte nen RTT phai NHO HON, can do lai bang RTTmax).
+ * Khoang cach 2 lenh T khi ESP het cho 1 phien:
+ *   REPLY_TIMEOUT_MS(1300) + guard 20 + ~26 ms day T vao UART ~= 1.35 s.
+ * Climb/roll/pitch/yaw tu bo sau 1.6 s (> 1 phien hong, < 2 phien hong).
+ * Doi REPLY_TIMEOUT_MS ben ESP32 thi phai doi lai so nay va LINK_LOST_MS. */
+#define DRONE_LINK_CLIMB_TIMEOUT_MS 1600U
 /* Thay AUX: E220 vua xuat xong T ra UART -> doi ngan roi moi phat S. */
 #define DRONE_LINK_TURNAROUND_MS 15U
 /* S tre hon muc nay thi bo: ESP co the da timeout va sap phat T moi. */
 #define DRONE_LINK_REPLY_MAX_LATE_MS 100U
 
-/* Ly do ALT_HOLD tat, gui o truong cuoi goi S. ESP32 dung de phan biet
- * ha canh binh thuong (khong DUNG) voi loi (DUNG, can KICH HOAT LAI).
- * Phai khop voi ALT_EXIT_* trong esp32_drone_web.ino. */
-typedef enum
+/* So thu tu goi tra loi trong chu ky: vi tri 2 -> G (GPS), 4 -> M (motor +
+ * chan doan), con lai -> S. S chiem 3/5 phien, khoang cach S toi da 2 phien. */
+#define DRONE_LINK_REPLY_CYCLE 5U
+
+/* Du lieu cho goi tra loi (STM -> ESP). */
+typedef struct
 {
-    ALT_EXIT_NONE = 0,            /* dang bay / chua tung cat canh */
-    ALT_EXIT_LANDED = 1,          /* ha canh binh thuong bang lenh XUONG */
-    ALT_EXIT_BARO = 2,            /* DPS310 mat/khong hop le */
-    ALT_EXIT_BARO_LATCHED = 3,    /* loi baro da chot, cho lenh mode moi */
-    ALT_EXIT_UPDATE_FAULT = 4,    /* AltitudeHold_Update tu choi mau */
-    ALT_EXIT_FAILSAFE_LANDED = 5, /* mat link, tu ha cham va da cham dat */
-    ALT_EXIT_STOPPED = 6,         /* ESP gui T mode 0 (DUNG) */
-    ALT_EXIT_EMERG_LANDED = 7,    /* ha canh khan cap vong ho (baro loi) da xong */
-    ALT_EXIT_IMU = 8              /* mat IMU, da cat motor */
-} AltExitReason_t;
+    uint16_t throttle_us; /* ga THAT dang ra mixer */
+    float roll_deg, pitch_deg, yaw_deg;
+    uint16_t m1, m2, m3, m4;
+    uint8_t flight_state;    /* FlightState_t */
+    float altitude_m;
+    uint8_t alt_exit_reason; /* AltExitReason_t */
+} DroneLinkStatus_t;
 
 typedef struct
 {
@@ -63,6 +72,7 @@ typedef struct
 
     uint32_t status_ready_ms;
     uint32_t reply_late_drop_count;
+    uint32_t reply_count; /* so goi tra loi da phat, chon S/G/M */
 
     uint32_t rx_byte_count;
     uint32_t rx_line_count;
@@ -88,11 +98,6 @@ int16_t DroneLink_ClimbCommand(const DroneLink_t *link);
 int16_t DroneLink_RollCommand(const DroneLink_t *link);
 int16_t DroneLink_PitchCommand(const DroneLink_t *link);
 int16_t DroneLink_YawRateCommand(const DroneLink_t *link);
-/* S: thr = ga THAT dang ra mixer (khong phai so nhac lai lenh T),
- * cuoi goi them alt_exit_reason (AltExitReason_t). */
-bool DroneLink_SendStatus(DroneLink_t *link, uint16_t throttle_us,
-                          float roll, float pitch, float yaw,
-                          uint16_t m1, uint16_t m2, uint16_t m3, uint16_t m4,
-                          uint8_t alt_active, float altitude_m,
-                          uint8_t alt_exit_reason);
+/* Tra loi T dang cho bang S, G hoac M (xem DRONE_LINK_REPLY_CYCLE). */
+bool DroneLink_SendStatus(DroneLink_t *link, const DroneLinkStatus_t *st);
 #endif

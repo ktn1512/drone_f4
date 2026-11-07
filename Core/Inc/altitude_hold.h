@@ -37,4 +37,9 @@ uint8_t AltitudeHold_Update(AltitudeHold_t *ctrl,
                             uint32_t sample_ms,
                             int16_t climb_percent);
 
+/* Can integral de trim + integral = throttle_us hien tai (bumpless).
+ * Dung khi ben ngoai da ep throttle_us (vd san ga luc ha canh) va can
+ * tiep tuc dieu khien ma khong de ga tut/nhay. Khong doi he so PID. */
+void AltitudeHold_AlignOutput(AltitudeHold_t *ctrl);
+
 #endif

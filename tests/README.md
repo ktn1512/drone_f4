@@ -51,3 +51,29 @@ Mahony integral feedback defaults to disabled; if deliberately enabled, each
 axis is bounded to 5 degrees/s in radian/s units. This integral is separate
 from the flight controller PID integral.
 
+
+## Flight mode (truc dung AUTO) va giao thuc LoRa v2
+
+`test_flight_mode.c` chay `flight_mode.c` + `altitude_hold.c` that voi mo hinh
+truc dung don gian (ga treo 1405/1420 us, baro nhieu 3 cm) va kiem tra:
+khong giam ga nhanh hon 500 us/s khi drone con tren khong, khong phat hien
+cham dat gia, cat canh/ha canh/mat link/baro loi/bench khong canh.
+
+```powershell
+$fmTestExe = Join-Path $env:TEMP 'drone_f4_test_flight_mode.exe'
+& 'C:\msys64\ucrt64\bin\gcc.exe' -std=c11 -Wall -Wextra -Werror -ICore/Inc tests/test_flight_mode.c Core/Src/flight_mode.c Core/Src/altitude_hold.c -lm -o $fmTestExe
+& $fmTestExe          # them 1 tham so bat ky de in quy dao: & $fmTestExe v
+```
+
+`test_drone_link.c` bien dich `drone_link.c` that voi HAL/E220/GPS stub
+(`tests/host_stubs`) va kiem tra chu ky tra loi S,S,G,S,M, checksum, do dai
+goi xau nhat va parse lai bang dung chuoi `sscanf` cua `esp32_drone_web.ino`.
+
+```powershell
+$dlTestExe = Join-Path $env:TEMP 'drone_f4_test_drone_link.exe'
+& 'C:\msys64\ucrt64\bin\gcc.exe' -std=c11 -Wall -Wextra -Werror -Itests/host_stubs -ICore/Inc tests/test_drone_link.c Core/Src/drone_link.c Core/Src/pid.c -lm -o $dlTestExe
+& $dlTestExe
+```
+
+Mo hinh vat ly la GIA DINH de kiem tra logic, khong thay the thu nghiem that
+(co canh, buoc day).

@@ -25,14 +25,16 @@ constexpr uint16_t AUTO_REFERENCE_US = 1400; // STM32 mode 2 bat buoc = 1400
 constexpr int16_t MAX_ROLL_PITCH_DEG = 12; // STM32 cho toi da 15
 constexpr int16_t MAX_YAW_DPS = 60;        // STM32 cho toi da 90
 
-// ---- Master-slave timing (9600 baud / 2.4k, T ~30 byte, S ~100 byte) ----
-// Timeout PHAI lon hon RTT xau nhat (xem "RTT=" tren Serial), neu khong
-// ESP se phat chong len luc STM dang tra loi.
+// ---- Master-slave timing (9600 baud / air 2.4k) - giao thuc v2 ----
+// T ~25-36 byte; tra loi S/G/M <= 55 byte (truoc day S ~86-120 byte, RTT ~1185 ms).
+// Timeout PHAI lon hon RTT xau nhat (xem "RTTmax=" tren Serial), neu khong
+// ESP se phat chong len luc STM dang tra loi. Neu RTTmax > ~1000 ms thi
+// tang REPLY_TIMEOUT_MS va cap nhat lai 2 hang so ben STM32.
 // Rang buoc voi STM32 (drone_link.h / main.c):
-//   REPLY_TIMEOUT_MS + POLL_GUARD_MS + ~150 ms truyen T < DRONE_LINK_CLIMB_TIMEOUT_MS (2200)
-//   DRONE_LINK_CLIMB_TIMEOUT_MS < LINK_LOST_MS (3000) -> mat 1 goi S khong kich failsafe.
-// Doi so nay thi phai doi ca 2 hang so ben STM32.
-constexpr uint32_t REPLY_TIMEOUT_MS = 1800;
+//   REPLY_TIMEOUT_MS + POLL_GUARD_MS + ~26 ms day T < DRONE_LINK_CLIMB_TIMEOUT_MS (1600)
+//   2 x (REPLY_TIMEOUT_MS + 46) < LINK_LOST_MS (3000) -> mat 2 phien lien tiep
+//   khong kich failsafe, mat 3 phien (~4 s) moi kich.
+constexpr uint32_t REPLY_TIMEOUT_MS = 1300;
 constexpr uint32_t POLL_GUARD_MS = 20; // nghi sau moi phien truoc khi phat tiep
 
 constexpr uint32_t STATUS_VALID_MS = 5000;
@@ -57,8 +59,52 @@ enum AltExit : uint8_t
   // ALT_EXIT_MAX = ALT_EXIT_STOPPED
   ALT_EXIT_EMERG_LANDED = 7, // ha canh khan cap (baro loi) da xong, motor 1000
   ALT_EXIT_IMU = 8,          // mat IMU, STM da cat motor
-  ALT_EXIT_MAX = ALT_EXIT_IMU
+  ALT_EXIT_TAKEOFF_FAIL = 9, // het gio cat canh ma khong roi dat
+  ALT_EXIT_MAX = ALT_EXIT_TAKEOFF_FAIL
 };
+
+// Trang thai truc dung STM32 (truong fs goi S). Khop FlightState_t (flight_mode.h).
+enum FlightState : uint8_t
+{
+  FS_DISARMED = 0,
+  FS_SPOOLUP = 1,
+  FS_TAKEOFF = 2,
+  FS_ALT_HOLD = 3,
+  FS_LANDING = 4,
+  FS_SPOOLDOWN = 5,
+  FS_EMERGENCY = 6,
+  FS_MAX = FS_EMERGENCY
+};
+
+const char *flightStateText(uint8_t fs)
+{
+  switch (fs)
+  {
+  case FS_DISARMED:
+    return "Dung motor";
+  case FS_SPOOLUP:
+    return "Dang tang ga khoi dong";
+  case FS_TAKEOFF:
+    return "Dang cat canh";
+  case FS_ALT_HOLD:
+    return "Giu do cao";
+  case FS_LANDING:
+    return "Dang ha";
+  case FS_SPOOLDOWN:
+    return "Ha ga ve idle";
+  case FS_EMERGENCY:
+    return "Ha khan cap (baro loi)";
+  default:
+    return "Khong ro";
+  }
+}
+
+// "Active" = motor dang chay co dieu khien (giong FlightMode_Active ben STM32).
+bool flightStateActive(uint8_t fs)
+{
+  return fs == FS_SPOOLUP || fs == FS_TAKEOFF || fs == FS_ALT_HOLD ||
+         fs == FS_LANDING || fs == FS_EMERGENCY;
+}
 
 const char *altExitText(uint8_t reason)
 {
@@ -82,6 +128,8 @@ const char *altExitText(uint8_t reason)
     return "Ha canh khan cap (baro loi) da xong";
   case ALT_EXIT_IMU:
     return "Mat IMU, da cat motor";
+  case ALT_EXIT_TAKEOFF_FAIL:
+    return "Cat canh that bai (khong roi dat)";
   default:
     return "Khong ro";
   }
@@ -111,6 +159,10 @@ uint16_t rxThrottle = MIN_THR; // ga THAT cua STM32 (khong phai so nhac lai lenh
 uint8_t rxAltExit = ALT_EXIT_NONE;
 float rxRoll = 0, rxPitch = 0, rxYaw = 0;
 bool rxAltActive = false;
+uint8_t rxFlightState = FS_DISARMED;
+// Chan doan tu goi M (bo dem phia STM32).
+bool diagSeen = false;
+unsigned long diagStmRxT = 0, diagStmRxBad = 0, diagStmLate = 0, diagStmUartErr = 0, diagStmRxOvf = 0;
 float rxAltitudeM = 0;
 bool rxGpsFix = false;
 double rxGpsLat = 0, rxGpsLon = 0;
@@ -139,7 +191,7 @@ enum class LinkState : uint8_t
 };
 LinkState linkState = LinkState::IDLE;
 uint32_t pendingSeq = 0;
-uint32_t pollSentMs = 0, pollDoneMs = 0, lastRttMs = 0;
+uint32_t pollSentMs = 0, pollDoneMs = 0, lastRttMs = 0, maxRttMs = 0;
 uint32_t replyOkCount = 0, replyTimeoutCount = 0, replyMismatchCount = 0;
 
 // JSON string: chi giu ASCII an toan, byte la thi escape.
@@ -376,9 +428,75 @@ bool parseSigned(const String &s, int minVal, int maxVal, int16_t *value)
   return true;
 }
 
-// ---- Goi S tu STM32 (18 truong, co GPS + ly do thoat ALT_HOLD) ----
-// S,seq,thr,r,p,y,m1,m2,m3,m4,altActive,altM,fix,lat,lon,speed,course,sats,altExit
+// ---- Goi tra loi tu STM32 (giao thuc v2) ----
+// S,seq,thr,roll10,pitch10,yaw,fs,alt_cm,exit   (trang thai dieu khien)
+// G,seq,fix,lat,lon,speed10_kmh,course,sats     (GPS, 1/5 phien)
+// M,seq,m1,m2,m3,m4,rxT,rxBad,late,uerr,rxovf   (motor + chan doan, 1/5 phien)
 // thr = ga that dang ra mixer.
+
+// Xu ly logic an toan khi nhan S hop le (tach rieng tu onFrame cu, giu nguyen hanh vi).
+void applyStatusS(unsigned thr, int roll10, int pitch10, int yaw, unsigned fs,
+                  int altCm, unsigned altExit)
+{
+  rxThrottle = (uint16_t)thr;
+  rxRoll = roll10 / 10.0f;
+  rxPitch = pitch10 / 10.0f;
+  rxYaw = (float)yaw;
+  rxFlightState = (uint8_t)fs;
+  rxAltActive = flightStateActive(rxFlightState);
+  rxAltExit = (uint8_t)altExit;
+  rxAltitudeM = altCm / 100.0f;
+  lastStatusMs = millis();
+  statusSeen = true;
+  ++validStatusCount;
+  statusDiagnostic = String("Status hop le: ") + flightStateText(rxFlightState);
+
+  // Dang bay ma STM32 tat ALT_HOLD:
+  //  - LANDED: ha canh binh thuong, STM da/ dang ve idle -> giu mode 2,
+  //    bam LEN/CAT CANH lai la bay tiep, khong can KICH HOAT LAI.
+  //  - Ly do khac (baro, failsafe, cat canh that bai...): coi la loi -> DUNG.
+  if (!stopped)
+  {
+    if (rxAltActive)
+    {
+      altWasActive = true;
+    }
+    else if (altWasActive)
+    {
+      altWasActive = false;
+      webLostLanding = false;
+      zeroCommands();
+      if (rxAltExit == ALT_EXIT_LANDED)
+      {
+        Serial.println("STM32 da ha canh (ALT_EXIT_LANDED)");
+      }
+      else
+      {
+        // KHONG stopNow() ngay: neu STM con ga > 1000 thi no dang ha ga ve idle,
+        // gui mode 0 luc nay se cat motor theo buoc. Cho STM tu ve 1000.
+        static char reason[80];
+        snprintf(reason, sizeof(reason), "STM32 thoat ALT_HOLD: %s (ma %u)",
+                 altExitText(rxAltExit), (unsigned)rxAltExit);
+        faultText = reason;
+        faultStopPending = true;
+        statusDiagnostic = faultText;
+      }
+    }
+    // Kiem tra o MOI goi S, khong chi luc vua thoat ALT_HOLD.
+    if (faultStopPending)
+    {
+      if (rxThrottle == MIN_THR)
+        stopNow(faultText.c_str());
+      else
+        statusDiagnostic = faultText + " - dang ha ga";
+    }
+  }
+  else
+  {
+    altWasActive = false;
+  }
+}
+
 void onFrame(String frame)
 {
   // Trong phien, BAT KY dong hoan chinh nao tu STM (dung hay hong) deu
@@ -393,115 +511,99 @@ void onFrame(String frame)
   if (!decodeFrame(frame))
   {
     ++radioRxErrors;
-    if (frame.startsWith("S,"))
-    {
-      ++invalidStatusCount;
-      statusDiagnostic = "Sai checksum status S";
-    }
+    ++invalidStatusCount;
+    statusDiagnostic = "Sai checksum goi tra loi";
     return;
   }
-  if (!frame.startsWith("S,"))
+  const char kind = frame.length() > 2 && frame[1] == ',' ? frame[0] : '?';
+  if (kind != 'S' && kind != 'G' && kind != 'M')
     return;
 
   unsigned long seq = 0;
-  unsigned thr = 0, m1 = 0, m2 = 0, m3 = 0, m4 = 0, active = 0, fix = 0, sats = 0, altExit = 0;
-  float r = 0, p = 0, y = 0, altitude = 0, speedKmh = 0, courseDeg = 0;
-  double latitude = 0, longitude = 0;
   int pos = 0;
-  const int fields = sscanf(frame.c_str(),
-                            "S,%lu,%u,%f,%f,%f,%u,%u,%u,%u,%u,%f,%u,%lf,%lf,%f,%f,%u,%u%n",
-                            &seq, &thr, &r, &p, &y, &m1, &m2, &m3, &m4,
-                            &active, &altitude, &fix, &latitude, &longitude,
-                            &speedKmh, &courseDeg, &sats, &altExit, &pos);
+  bool ok = false;
+  const char *c = frame.c_str();
+  const int len = (int)frame.length();
 
-  const bool shapeOk = (fields == 18 && pos == (int)frame.length() && altExit <= ALT_EXIT_MAX);
-  const bool gpsOk = fix <= 1U && isfinite(latitude) && isfinite(longitude) && latitude >= -90.0 && latitude <= 90.0 && longitude >= -180.0 && longitude <= 180.0 && isfinite(speedKmh) && speedKmh >= 0.0f && isfinite(courseDeg) && courseDeg >= 0.0f && courseDeg <= 360.0f && sats <= 99U;
-  if (shapeOk && gpsOk && active <= 1U && isfinite(altitude) && thr >= MIN_THR && thr <= MAX_THR && isfinite(r) && isfinite(p) && isfinite(y) && m1 >= MIN_THR && m1 <= MAX_MOTOR_STATUS_US && m2 >= MIN_THR && m2 <= MAX_MOTOR_STATUS_US && m3 >= MIN_THR && m3 <= MAX_MOTOR_STATUS_US && m4 >= MIN_THR && m4 <= MAX_MOTOR_STATUS_US)
+  // Gia tri tam, chi ap dung khi seq khop phien.
+  unsigned thr = 0, fs = 0, altExit = 0;
+  int roll10 = 0, pitch10 = 0, yaw = 0, altCm = 0;
+  unsigned fix = 0, sats = 0;
+  double lat = 0, lon = 0;
+  long spd10 = 0, course = 0;
+  unsigned m[4] = {0, 0, 0, 0};
+  unsigned long rxT = 0, rxBad = 0, late = 0, uerr = 0, ovf = 0;
+
+  if (kind == 'S')
   {
-    // S phai tra loi dung T vua gui; goi tre/ngoai phien thi bo.
-    if (!inPoll || seq != pendingSeq)
-    {
-      ++replyMismatchCount;
-      Serial.printf("S bo qua: seq=%lu pending=%lu inPoll=%u\n",
-                    seq, (unsigned long)pendingSeq, (unsigned)inPoll);
-      return;
-    }
-    lastRttMs = now - pollSentMs;
-    ++replyOkCount;
-
-    rxThrottle = (uint16_t)thr;
-    rxRoll = r;
-    rxPitch = p;
-    rxYaw = y;
-    rxAltActive = active != 0;
-    rxAltExit = (uint8_t)altExit;
-    rxAltitudeM = altitude;
-    rxMotors[0] = m1;
-    rxMotors[1] = m2;
-    rxMotors[2] = m3;
-    rxMotors[3] = m4;
-    rxGpsFix = (fix == 1U);
-    rxGpsLat = rxGpsFix ? latitude : 0.0;
-    rxGpsLon = rxGpsFix ? longitude : 0.0;
-    rxGpsSpeedKmh = rxGpsFix ? speedKmh : 0.0f;
-    rxGpsCourseDeg = rxGpsFix ? courseDeg : 0.0f;
-    rxGpsSatellites = rxGpsFix ? sats : 0;
-    lastStatusMs = millis();
-    statusSeen = true;
-    ++validStatusCount;
-    statusDiagnostic = "Status S + GPS hop le";
-
-    // Dang bay ma STM32 tat ALT_HOLD:
-    //  - LANDED: ha canh binh thuong, STM da disarm (motor 1000) -> giu mode 2,
-    //    bam LEN/CAT CANH lai la bay tiep, khong can KICH HOAT LAI.
-    //  - Ly do khac (baro, failsafe...): coi la loi -> DUNG.
-    if (!stopped)
-    {
-      if (rxAltActive)
-      {
-        altWasActive = true;
-      }
-      else if (altWasActive)
-      {
-        altWasActive = false;
-        webLostLanding = false;
-        zeroCommands();
-        if (rxAltExit == ALT_EXIT_LANDED)
-        {
-          Serial.println("STM32 da ha canh (ALT_EXIT_LANDED)");
-        }
-        else
-        {
-          // KHONG stopNow() ngay: neu STM con ga > 1000 thi no dang ha khan cap,
-          // gui mode 0 luc nay se cat motor giua troi. Cho STM tu ve 1000.
-          static char reason[80];
-          snprintf(reason, sizeof(reason), "STM32 thoat ALT_HOLD: %s (ma %u)",
-                   altExitText(rxAltExit), (unsigned)rxAltExit);
-          faultText = reason;
-          faultStopPending = true;
-          statusDiagnostic = faultText;
-        }
-      }
-      // Kiem tra o MOI goi S, khong chi luc vua thoat ALT_HOLD.
-      if (faultStopPending)
-      {
-        if (rxThrottle == MIN_THR)
-          stopNow(faultText.c_str());
-        else
-          statusDiagnostic = faultText + " - dang ha canh khan cap";
-      }
-    }
-    else
-    {
-      altWasActive = false;
-    }
+    ok = sscanf(c, "S,%lu,%u,%d,%d,%d,%u,%d,%u%n", &seq, &thr, &roll10, &pitch10,
+                &yaw, &fs, &altCm, &altExit, &pos) == 8 &&
+         pos == len && thr >= MIN_THR && thr <= MAX_THR && fs <= FS_MAX &&
+         altExit <= ALT_EXIT_MAX && roll10 >= -1800 && roll10 <= 1800 &&
+         pitch10 >= -900 && pitch10 <= 900 && yaw >= 0 && yaw < 360;
+  }
+  else if (kind == 'G')
+  {
+    ok = sscanf(c, "G,%lu,%u,%lf,%lf,%ld,%ld,%u%n", &seq, &fix, &lat, &lon, &spd10,
+                &course, &sats, &pos) == 7 &&
+         pos == len && fix <= 1U && isfinite(lat) && isfinite(lon) &&
+         lat >= -90.0 && lat <= 90.0 && lon >= -180.0 && lon <= 180.0 &&
+         spd10 >= 0 && course >= 0 && course < 360 && sats <= 99U;
   }
   else
   {
+    ok = sscanf(c, "M,%lu,%u,%u,%u,%u,%lu,%lu,%lu,%lu,%lu%n", &seq, &m[0], &m[1],
+                &m[2], &m[3], &rxT, &rxBad, &late, &uerr, &ovf, &pos) == 10 &&
+         pos == len;
+    for (int i = 0; i < 4 && ok; ++i)
+      ok = m[i] >= MIN_THR && m[i] <= MAX_MOTOR_STATUS_US;
+  }
+
+  if (!ok)
+  {
     ++invalidStatusCount;
-    statusDiagnostic = "Status S sai so truong hoac ngoai gioi han";
-    Serial.print("S invalid: ");
+    statusDiagnostic = "Goi tra loi sai so truong hoac ngoai gioi han";
+    Serial.print("Reply invalid: ");
     Serial.println(frame);
+    return;
+  }
+  // Tra loi phai dung T vua gui; goi tre/ngoai phien thi bo.
+  if (!inPoll || seq != pendingSeq)
+  {
+    ++replyMismatchCount;
+    Serial.printf("%c bo qua: seq=%lu pending=%lu inPoll=%u\n", kind,
+                  seq, (unsigned long)pendingSeq, (unsigned)inPoll);
+    return;
+  }
+  lastRttMs = now - pollSentMs;
+  if (lastRttMs > maxRttMs)
+    maxRttMs = lastRttMs;
+  ++replyOkCount;
+
+  if (kind == 'S')
+  {
+    applyStatusS(thr, roll10, pitch10, yaw, fs, altCm, altExit);
+  }
+  else if (kind == 'G')
+  {
+    // Khong fix -> 0 va KHONG duoc coi la vi tri that.
+    rxGpsFix = (fix == 1U);
+    rxGpsLat = rxGpsFix ? lat : 0.0;
+    rxGpsLon = rxGpsFix ? lon : 0.0;
+    rxGpsSpeedKmh = rxGpsFix ? spd10 / 10.0f : 0.0f;
+    rxGpsCourseDeg = rxGpsFix ? (float)course : 0.0f;
+    rxGpsSatellites = rxGpsFix ? sats : 0;
+  }
+  else
+  {
+    for (int i = 0; i < 4; ++i)
+      rxMotors[i] = (uint16_t)m[i];
+    diagSeen = true;
+    diagStmRxT = rxT;
+    diagStmRxBad = rxBad;
+    diagStmLate = late;
+    diagStmUartErr = uerr;
+    diagStmRxOvf = ovf;
   }
 }
 
@@ -569,14 +671,17 @@ void setupWebRoutes()
     String json;
     json.reserve(1800);
     json = "{\"stopped\":" + String(stopped ? "true" : "false") + ",\"stopReason\":" + jsonString(stopReason) + ",\"link\":" + String(freshStatus() ? "true" : "false") + ",\"statusSeen\":" + String(statusSeen ? "true" : "false") + ",\"statusAgeMs\":" + (statusSeen ? String((uint32_t)(now - lastStatusMs)) : String("null")) + ",\"statusValidCount\":" + String(validStatusCount) + ",\"statusInvalidCount\":" + String(invalidStatusCount) + ",\"statusDiagnostic\":" + jsonString(statusDiagnostic);
-    json += ",\"radio\":{\"ready\":" + String(radioReady(now) ? "true" : "false") + ",\"auxReady\":" + String(radioAuxReady(now) ? "true" : "false") + ",\"txCount\":" + String(radioTxCount) + ",\"rxCount\":" + String(radioRxCount) + ",\"rxErrors\":" + String(radioRxErrors) + ",\"txErrors\":" + String(radioTxErrors) + ",\"rttMs\":" + String(lastRttMs) + ",\"replyOk\":" + String(replyOkCount) + ",\"replyTimeout\":" + String(replyTimeoutCount) + ",\"replyMismatch\":" + String(replyMismatchCount) + ",\"lastRx\":" + jsonString(lastRadioRx) + ",\"lastTx\":" + jsonString(lastRadioTx) + "}";
+    json += ",\"radio\":{\"ready\":" + String(radioReady(now) ? "true" : "false") + ",\"auxReady\":" + String(radioAuxReady(now) ? "true" : "false") + ",\"txCount\":" + String(radioTxCount) + ",\"rxCount\":" + String(radioRxCount) + ",\"rxErrors\":" + String(radioRxErrors) + ",\"txErrors\":" + String(radioTxErrors) + ",\"rttMs\":" + String(lastRttMs) + ",\"rttMaxMs\":" + String(maxRttMs) + ",\"replyOk\":" + String(replyOkCount) + ",\"replyTimeout\":" + String(replyTimeoutCount) + ",\"replyMismatch\":" + String(replyMismatchCount) + ",\"lastRx\":" + jsonString(lastRadioRx) + ",\"lastTx\":" + jsonString(lastRadioTx) + "}";
     if (statusSeen) {
-      json += ",\"status\":{\"throttle\":" + String(rxThrottle) + ",\"roll\":" + String(rxRoll, 1) + ",\"pitch\":" + String(rxPitch, 1) + ",\"yaw\":" + String(rxYaw, 1) + ",\"altActive\":" + String(rxAltActive ? "true" : "false") + ",\"altExit\":" + String(rxAltExit) + ",\"altExitText\":" + jsonString(altExitText(rxAltExit)) + ",\"altitudeM\":" + String(rxAltitudeM, 2) + ",\"motors\":[";
+      json += ",\"status\":{\"throttle\":" + String(rxThrottle) + ",\"roll\":" + String(rxRoll, 1) + ",\"pitch\":" + String(rxPitch, 1) + ",\"yaw\":" + String(rxYaw, 1) + ",\"altActive\":" + String(rxAltActive ? "true" : "false") + ",\"altExit\":" + String(rxAltExit) + ",\"altExitText\":" + jsonString(altExitText(rxAltExit)) + ",\"flightState\":" + String(rxFlightState) + ",\"flightStateText\":" + jsonString(flightStateText(rxFlightState)) + ",\"altitudeM\":" + String(rxAltitudeM, 2) + ",\"motors\":[";
       for (int i = 0; i < 4; i++) {
         if (i) json += ',';
         json += String(rxMotors[i]);
       }
       json += "],\"gpsFix\":" + String(rxGpsFix ? "true" : "false") + ",\"gpsLat\":" + String(rxGpsLat, 6) + ",\"gpsLon\":" + String(rxGpsLon, 6) + ",\"gpsSpeedKmh\":" + String(rxGpsSpeedKmh, 1) + ",\"gpsCourseDeg\":" + String(rxGpsCourseDeg, 1) + ",\"gpsSatellites\":" + String(rxGpsSatellites) + "}";
+    }
+    if (diagSeen) {
+      json += ",\"stmDiag\":{\"rxT\":" + String(diagStmRxT) + ",\"rxBad\":" + String(diagStmRxBad) + ",\"lateDrop\":" + String(diagStmLate) + ",\"uartErr\":" + String(diagStmUartErr) + ",\"rxOvf\":" + String(diagStmRxOvf) + "}";
     }
     json += ",\"climb\":" + String(climbCommand) + ",\"rollCommand\":" + String(rollCommand) + ",\"pitchCommand\":" + String(pitchCommand) + ",\"yawRateCommand\":" + String(yawRateCommand) + "}";
     web.send(200, "application/json", json); });
@@ -709,11 +814,16 @@ void loop()
   if ((uint32_t)(now - lastDebug) >= 1000)
   {
     lastDebug = now;
-    Serial.printf("TX=%lu OK=%lu TO=%lu MIS=%lu RTT=%lu STOP=%u CL=%d ALT=%u H=%.2f\n",
+    // Tach mat goi theo chieu: TX (ESP gui) vs stmRxT (STM nhan T hop le)
+    // -> mat chieu xuong; stmRxT vs OK -> mat chieu len.
+    Serial.printf("TX=%lu OK=%lu TO=%lu MIS=%lu RTT=%lu RTTmax=%lu RXERR=%lu RXB=%lu "
+                  "stmRxT=%lu stmBad=%lu stmLate=%lu stmUart=%lu STOP=%u CL=%d FS=%u H=%.2f\n",
                   (unsigned long)radioTxCount, (unsigned long)replyOkCount,
                   (unsigned long)replyTimeoutCount, (unsigned long)replyMismatchCount,
-                  (unsigned long)lastRttMs, (unsigned)stopped, (int)climbCommand,
-                  (unsigned)rxAltActive, rxAltitudeM);
+                  (unsigned long)lastRttMs, (unsigned long)maxRttMs,
+                  (unsigned long)radioRxErrors, (unsigned long)radioRxByteCount,
+                  diagStmRxT, diagStmRxBad, diagStmLate, diagStmUartErr,
+                  (unsigned)stopped, (int)climbCommand, (unsigned)rxFlightState, rxAltitudeM);
   }
   delay(1);
 }

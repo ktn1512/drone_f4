@@ -46,6 +46,18 @@ extern "C" {
 
 /* Exported macro ------------------------------------------------------------*/
 /* USER CODE BEGIN EM */
+/* Dua 4 kenh ESC ve 1000 us bang ghi thanh ghi truc tiep (khong goi HAL,
+ * khong dung stack) - dung trong fault handler va Error_Handler.
+ * TIM5 la phan cung, neu khong lam vay no se phat MAI gia tri CCR cuoi
+ * khi CPU treo. Ghi CCR khi TIM5 chua bat clock khong co tac dung, vo hai. */
+#define MOTORS_FAILSAFE_OUTPUT()  \
+  do                              \
+  {                               \
+    TIM5->CCR1 = 1000U;           \
+    TIM5->CCR2 = 1000U;           \
+    TIM5->CCR3 = 1000U;           \
+    TIM5->CCR4 = 1000U;           \
+  } while (0)
 
 /* USER CODE END EM */
 

@@ -1,6 +1,7 @@
-/* LoRa payload ASCII + *checksum XOR, T/S frames only. */
+/* LoRa payload ASCII + *checksum XOR: nhan T, tra loi S/G/M (giao thuc v2). */
 #include "drone_link.h"
 #include "gps.h"
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -252,16 +253,63 @@ void DroneLink_Poll(DroneLink_t *l)
 	}
 }
 
-/* S,seq,thr,R,P,Y,m1,m2,m3,m4,ALT_ACTIVE,ALT_M,
- *   GPS_FIX,LAT,LON,SPEED_KMH,COURSE_DEG,SATELLITES,ALT_EXIT*CS\n
- * thr = ga that dang ra mixer; ALT_EXIT = AltExitReason_t.
- */
-bool DroneLink_SendStatus(DroneLink_t *l, uint16_t throttle_us,
-						  float roll, float pitch, float yaw,
-						  uint16_t m1, uint16_t m2, uint16_t m3, uint16_t m4, uint8_t alt_active,
-						  float altitude_m, uint8_t alt_exit_reason)
+static long round_clamp(float x, float scale, long lo, long hi)
 {
-	if (!l->status_pending)
+	if (!isfinite(x))
+		return 0L;
+	float v = x * scale;
+	v += (v >= 0.0f) ? 0.5f : -0.5f;
+	long n = (long)v;
+	return n < lo ? lo : (n > hi ? hi : n);
+}
+
+/* Tao payload tra loi theo vi tri trong chu ky. Tra so byte hoac <= 0. */
+static int build_reply(const DroneLink_t *l, const DroneLinkStatus_t *st,
+					   char *payload, size_t size)
+{
+	const unsigned long seq = (unsigned long)l->status_seq;
+	const uint32_t slot = l->reply_count % DRONE_LINK_REPLY_CYCLE;
+	if (slot == 2U)
+	{
+		/* G: GPS. Khong fix -> toa do 0 (ESP KHONG duoc coi la vi tri). */
+		const GPS_Data_t *gps = GPS_GetData();
+		if (gps == NULL || !gps->fix)
+			return snprintf(payload, size, "G,%lu,0,0,0,0,0,0", seq);
+		return snprintf(payload, size, "G,%lu,1,%.6f,%.6f,%ld,%ld,%u", seq,
+						gps->latitude, gps->longitude,
+						round_clamp(gps->speed_kmh, 10.0f, 0L, 99999L),
+						round_clamp(gps->course, 1.0f, 0L, 359L),
+						(unsigned)gps->satellites);
+	}
+	if (slot == 4U)
+	{
+		/* M: motor + bo dem chan doan link (de tach mat T va mat S). */
+		const E220_t *r = l->radio;
+		return snprintf(payload, size, "M,%lu,%u,%u,%u,%u,%lu,%lu,%lu,%lu,%lu", seq,
+						(unsigned)st->m1, (unsigned)st->m2, (unsigned)st->m3,
+						(unsigned)st->m4,
+						(unsigned long)l->throttle_rx_count,
+						(unsigned long)l->rx_invalid_frames,
+						(unsigned long)l->reply_late_drop_count,
+						(unsigned long)(r ? r->uart_error_count : 0U),
+						(unsigned long)(r ? r->rx_overflow_count : 0U));
+	}
+	/* S: chi cac truong dieu khien/an toan. Goc x10 (0.1 do), do cao cm. */
+	long yaw = round_clamp(st->yaw_deg, 1.0f, 0L, 360L);
+	if (yaw >= 360L)
+		yaw = 0L;
+	return snprintf(payload, size, "S,%lu,%u,%ld,%ld,%ld,%u,%ld,%u", seq,
+					(unsigned)st->throttle_us,
+					round_clamp(st->roll_deg, 10.0f, -1800L, 1800L),
+					round_clamp(st->pitch_deg, 10.0f, -900L, 900L),
+					yaw, (unsigned)st->flight_state,
+					round_clamp(st->altitude_m, 100.0f, -99999L, 99999L),
+					(unsigned)st->alt_exit_reason);
+}
+
+bool DroneLink_SendStatus(DroneLink_t *l, const DroneLinkStatus_t *st)
+{
+	if (l == NULL || st == NULL || !l->status_pending)
 		return false; /* Slave: khong tu phat */
 	const uint32_t now = HAL_GetTick();
 	if ((int32_t)(now - l->status_ready_ms) < 0)
@@ -272,24 +320,11 @@ bool DroneLink_SendStatus(DroneLink_t *l, uint16_t throttle_us,
 		++l->reply_late_drop_count;
 		return false;
 	}
-	const GPS_Data_t *gps = GPS_GetData();
-	/* When no fix is present, report zero coordinates; do not transmit a
-	 * stale location as though it were current. */
-	unsigned fix = (gps && gps->fix) ? 1U : 0U;
-	double lat = fix ? gps->latitude : 0.0;
-	double lon = fix ? gps->longitude : 0.0;
-	float speed = fix ? gps->speed_kmh : 0.0f;
-	float course = fix ? gps->course : 0.0f;
-	unsigned sats = fix ? gps->satellites : 0U;
-	char payload[176];
-	int n = snprintf(payload, sizeof(payload),
-					 "S,%lu,%u,%.1f,%.1f,%.1f,%u,%u,%u,%u,%u,%.2f,%u,%.6f,%.6f,%.1f,%.1f,%u,%u",
-					 (unsigned long)l->status_seq, (unsigned)throttle_us,
-					 roll, pitch, yaw, m1, m2, m3, m4, (unsigned)(alt_active ? 1U : 0U),
-					 altitude_m, fix, lat, lon, speed, course, sats,
-					 (unsigned)alt_exit_reason);
+	char payload[96];
+	int n = build_reply(l, st, payload, sizeof(payload));
 	if (n <= 0 || n >= (int)sizeof(payload) || !send_payload(l, payload))
 		return false;
 	l->status_pending = false;
+	++l->reply_count;
 	return true;
 }

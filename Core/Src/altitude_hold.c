@@ -123,3 +123,12 @@ uint8_t AltitudeHold_Update(AltitudeHold_t *ctrl,
                                 ALT_MIN_US, ALT_MAX_US);
     return 1U;
 }
+
+void AltitudeHold_AlignOutput(AltitudeHold_t *ctrl)
+{
+    if (ctrl == NULL || !ctrl->active || !isfinite(ctrl->throttle_us) ||
+        !isfinite(ctrl->trim_us))
+        return;
+    ctrl->integral_us = clampf(ctrl->throttle_us - ctrl->trim_us,
+                               -ALT_I_LIMIT_US, ALT_I_LIMIT_US);
+}

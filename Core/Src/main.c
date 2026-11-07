@@ -32,6 +32,7 @@
 #include "drone_link.h"
 #include "dps310.h"
 #include "altitude_hold.h"
+#include "flight_mode.h"
 
 #include "stdio.h"
 #include "string.h"
@@ -108,41 +109,15 @@ ICM42670_Data_t imu;
 /* Khai báo baro*/
 DPS310_t dps310;
 
-/* ALT_HOLD: control independent of Roll/Pitch/Yaw PID. */
-AltitudeHold_t altitude_hold;
-static uint32_t alt_hold_faults = 0U;
-/* AUTO (T mode 2): cat canh + giu do cao bang altitude PID.
- * Moi mode khac (mode 0 = DUNG) -> tat ALT_HOLD, motor 1000. */
-static uint8_t auto_was_requested = 0U;
-static uint8_t alt_fault_latched = 0U;
-static uint8_t armed = 0U;
-static float ground_alt_m = 0.0f; /* do cao baro luc cat canh */
-static uint32_t land_since_ms = 0U;
-static int16_t climb_cmd = 0;					  /* climb thuc dung (co failsafe) */
-volatile uint8_t alt_exit_reason = ALT_EXIT_NONE; /* AltExitReason_t, gui trong goi S */
-#define AUTO_IDLE_US 1150.0f					  /* quay khong tai luc vua arm tren mat dat */
-#define AUTO_HOVER_GUESS_US 1350.0f				  /* uoc luong ga treo, PID tu hoc them */
-#define LAND_BAND_M 0.15f
-#define LAND_CONFIRM_MS 1000U
-/* Phai lon hon DRONE_LINK_CLIMB_TIMEOUT_MS (mat 1 goi S khong duoc kich failsafe). */
+/* Truc dung AUTO (T mode 2): may trang thai ga trong flight_mode.c
+ * (arm, cat canh, giu do cao, ha canh, khan cap). Doc lap PID Roll/Pitch/Yaw. */
+FlightMode_t flight;
+static int16_t climb_cmd = 0; /* climb thuc dung (co failsafe) */
+/* Phai lon hon DRONE_LINK_CLIMB_TIMEOUT_MS (mat 1 phien khong duoc kich failsafe).
+ * Voi REPLY_TIMEOUT_MS 1300 ben ESP32: 1 T mat -> khoang T ~2.7 s < 3.0 s,
+ * 2 T mat lien tiep (~4.0 s) moi vao failsafe. */
 #define LINK_LOST_MS 3000U
-
-#define FAILSAFE_CLIMB (-60) /* 0.24 m/s, nhanh hon ro rang so voi nguong dung yen */
-/* Phat hien cham dat: van toc gan 0 VA ga thap hon ga treo da hoc. */
-#define LAND_STILL_MPS 0.06f		 /* tren van toc da loc cham (tau ~0.5 s) */
-#define LAND_THR_DROP_US 40.0f		 /* kem near_ground */
-#define LAND_THR_DROP_HARD_US 150.0f /* khong can baro: ga thap the nay ma dung yen = da cham dat */
-static float hover_ref_us = AUTO_HOVER_GUESS_US;
-static float land_vz_lpf = 0.0f;
-/* Ha canh khan cap vong ho khi baro/ALT_HOLD loi giua troi: KHONG cat motor. */
-#define EMERG_START_DROP_US 25.0f
-#define EMERG_RAMP_US_PER_S 3.0f
-#define EMERG_ASSUMED_MPS 0.30f
-#define EMERG_EXTRA_MS 6000U
-#define EMERG_MAX_MS 30000U
-static uint8_t emerg_active = 0U;
-static float emerg_start_thr_us = 0.0f;
-static uint32_t emerg_start_ms = 0U, emerg_duration_ms = 0U;
+#define FAILSAFE_CLIMB (-60) /* 0.24 m/s */
 /* Mat IMU lien tiep -> cat motor (khong giu PWM cu). 10 lan ~ 20 ms. */
 #define IMU_FAIL_CUT_COUNT 10U
 static uint32_t imu_fail_count = 0U;
@@ -251,65 +226,27 @@ static void Motors_Write(void)
 	__HAL_TIM_SET_COMPARE(&htim5, TIM_CHANNEL_4, motor.m4);
 }
 
-/** @brief Tra goi S (chi khi co T dang cho): ga THAT + ly do thoat ALT_HOLD. */
+/** @brief Tra loi goi T (chi khi co T dang cho): S/G/M theo chu ky. */
 static void Send_Status(void)
 {
+	DroneLinkStatus_t st;
 	float thr = throttle;
 	if (!isfinite(thr) || thr < 1000.0f)
 		thr = 1000.0f;
 	else if (thr > (float)DRONE_LINK_MAX_THR)
 		thr = (float)DRONE_LINK_MAX_THR;
-	(void)DroneLink_SendStatus(&drone_link, (uint16_t)(thr + 0.5f),
-							   roll_deg, pitch_deg, yaw_deg,
-							   motor.m1, motor.m2, motor.m3, motor.m4,
-							   altitude_hold.active,
-							   isfinite(dps310.altitude_rel_m) ? dps310.altitude_rel_m : 0.0f,
-							   alt_exit_reason);
-}
-
-/* Baro/ALT_HOLD loi khi dang bay: giu ga treo da hoc tru mot chut, giam dan,
- * het thoi gian uoc luong thi tat. Goi TRUOC khi AltitudeHold_Reset. */
-static void Emergency_Begin(uint8_t reason, uint32_t now_ms)
-{
-	if (!altitude_hold.active)
-		return;
-	float hover = altitude_hold.trim_us + altitude_hold.integral_us;
-	if (!isfinite(hover))
-		hover = AUTO_HOVER_GUESS_US;
-	float thr = hover - EMERG_START_DROP_US;
-	if (thr < AUTO_IDLE_US)
-		thr = AUTO_IDLE_US;
-	if (thr > 1650.0f)
-		thr = 1650.0f;
-	/* target_m la do cao cuoi cung con tin duoc (altitude_m co the la mau loi). */
-	float h = altitude_hold.target_m - ground_alt_m;
-	if (!isfinite(h) || h < 0.0f)
-		h = 0.0f;
-	if (h > 20.0f)
-		h = 20.0f;
-	emerg_start_thr_us = thr;
-	emerg_duration_ms = (uint32_t)(h / EMERG_ASSUMED_MPS * 1000.0f) + EMERG_EXTRA_MS;
-	if (emerg_duration_ms > EMERG_MAX_MS)
-		emerg_duration_ms = EMERG_MAX_MS;
-	emerg_start_ms = now_ms;
-	emerg_active = 1U;
-	land_since_ms = 0U;
-	alt_exit_reason = reason;
-	AltitudeHold_Reset(&altitude_hold);
-}
-
-static float Emergency_Throttle(uint32_t now_ms)
-{
-	const uint32_t elapsed = now_ms - emerg_start_ms;
-	if (elapsed >= emerg_duration_ms)
-	{
-		emerg_active = 0U;
-		armed = 0U;
-		alt_exit_reason = ALT_EXIT_EMERG_LANDED;
-		return 1000.0f;
-	}
-	float thr = emerg_start_thr_us - EMERG_RAMP_US_PER_S * ((float)elapsed * 0.001f);
-	return (thr < AUTO_IDLE_US) ? AUTO_IDLE_US : thr;
+	st.throttle_us = (uint16_t)(thr + 0.5f);
+	st.roll_deg = roll_deg;
+	st.pitch_deg = pitch_deg;
+	st.yaw_deg = yaw_deg;
+	st.m1 = motor.m1;
+	st.m2 = motor.m2;
+	st.m3 = motor.m3;
+	st.m4 = motor.m4;
+	st.flight_state = (uint8_t)flight.state;
+	st.altitude_m = isfinite(dps310.altitude_rel_m) ? dps310.altitude_rel_m : 0.0f;
+	st.alt_exit_reason = flight.exit_reason;
+	(void)DroneLink_SendStatus(&drone_link, &st);
 }
 
 /* Chuẩn góc yaw 0..360 và sai số ngắn nhất -180..180 (độ). */
@@ -414,6 +351,27 @@ static void Mag_Service(void)
 	}
 	mag_last_good_tick = now;
 	++mag_ok_count;
+}
+
+/* IWDG bang thanh ghi (HAL IWDG khong co trong project).
+ * LSI ~32 kHz (datasheet F401: 17..47 kHz), /32 -> ~1 kHz, reload 499
+ * -> timeout danh dinh ~0.5 s (khoang 0.34..0.94 s theo sai so LSI).
+ * Lon hon blocking xau nhat trong vong chinh (SPI ICM timeout 2 x 100 ms).
+ * Bat SAU khoi tao (hieu chuan gyro/baro co HAL_Delay dai). Khi reset do
+ * watchdog, chan PWM ve input -> ESC mat xung -> motor dung (ESC failsafe):
+ * van tot hon PWM dong bang khong co dieu khien tu the. */
+static void Watchdog_Start(void)
+{
+	DBGMCU->APB1FZ |= DBGMCU_APB1_FZ_DBG_IWDG_STOP; /* dung IWDG khi debug halt */
+	IWDG->KR = 0xCCCCU; /* bat IWDG (khong tat lai duoc) */
+	IWDG->KR = 0x5555U; /* mo khoa PR/RLR */
+	IWDG->PR = 3U;      /* /32 */
+	IWDG->RLR = 499U;
+	uint32_t start = HAL_GetTick();
+	while (IWDG->SR != 0U && (HAL_GetTick() - start) < 50U)
+	{
+	}
+	IWDG->KR = 0xAAAAU;
 }
 
 /* USER CODE END 0 */
@@ -544,7 +502,7 @@ int main(void)
 	HAL_NVIC_SetPriority(USART1_IRQn, 6U, 0U);
 	HAL_NVIC_EnableIRQ(USART1_IRQn);
 	(void)GPS_Init(&huart1);
-	AltitudeHold_Reset(&altitude_hold);
+	FlightMode_Init(&flight);
 	motor.m1 = motor.m2 = motor.m3 = motor.m4 = 1000U;
 
 	/* DWT có trên Cortex-M4: đo dt bằng chu kỳ CPU, không lượng tử hóa 1 ms.
@@ -558,12 +516,15 @@ int main(void)
 	uint32_t last_control_cycles = DWT->CYCCNT;
 	uint32_t last_sample_cycles = last_control_cycles;
 
+	Watchdog_Start();
+
 	/* USER CODE END 2 */
 
 	/* Infinite loop */
 	/* USER CODE BEGIN WHILE */
 	while (1)
 	{
+		IWDG->KR = 0xAAAAU; /* kick watchdog: vong chinh con chay */
 		DroneLink_Poll(&drone_link);
 		GPS_Process(); /* Decode queued RMC/GGA outside UART IRQ. */
 
@@ -589,13 +550,9 @@ int main(void)
 		{
 			if (++imu_fail_count >= IMU_FAIL_CUT_COUNT)
 			{
-				/* Khong co IMU = khong giu duoc tu the: khong de PWM cu chay mai. */
-				if (altitude_hold.active || emerg_active || armed)
-					alt_exit_reason = ALT_EXIT_IMU;
-				AltitudeHold_Reset(&altitude_hold);
-				emerg_active = 0U;
-				armed = 0U;
-				alt_fault_latched = 1U;
+				/* Khong co IMU = khong giu duoc tu the: khong de PWM cu chay mai.
+				 * Duong duy nhat (cung voi DUNG) cat ga theo buoc. */
+				FlightMode_Kill(&flight, ALT_EXIT_IMU);
 				throttle = 1000.0f;
 				motor.m1 = motor.m2 = motor.m3 = motor.m4 = 1000U;
 				Motors_Write();
@@ -634,141 +591,51 @@ int main(void)
 
 		// roll_deg  = -roll_deg;
 		// pitch_deg = -pitch_deg;
-		/* AUTO / DUNG arbitration. ALT_HOLD chi chay khi T mode 2,
-		 * DPS310 co home hop le va mau moi.
-		 * Khong cap nhat PID do cao o toc do IMU 500 Hz.
-		 */
+
+		/* DPS310 32 Hz: doc toi da moi 10 ms, TRUOC buoc truc dung de mau moi
+		 * duoc dung ngay trong chu ky nay. */
+		static uint32_t last_baro_tick = 0U;
+		uint8_t baro_new = 0U;
 		const uint32_t alt_now_ms = HAL_GetTick();
+		if ((alt_now_ms - last_baro_tick) >= 10U)
+		{
+			last_baro_tick = alt_now_ms;
+			baro_new = (DPS310_ReadIfReady(&dps310) == HAL_OK) ? 1U : 0U;
+		}
 		const uint8_t baro_healthy = dps310.home_valid && dps310.valid && (alt_now_ms - dps310.last_update_ms <= 180U) && isfinite(dps310.altitude_rel_m);
 
 		const uint8_t auto_mode = drone_link.auto_requested ? 1U : 0U;
+		/* Failsafe: mat T qua LINK_LOST_MS -> ha co kiem soat qua vong ALT. */
+		const uint8_t link_lost =
+			(uint32_t)(alt_now_ms - drone_link.last_throttle_ms) > LINK_LOST_MS;
 		if (auto_mode)
-		{
-			if (!auto_was_requested)
-			{
-				AltitudeHold_Reset(&altitude_hold);
-				armed = 0U;
-				alt_fault_latched = 0U;
-				land_since_ms = 0U;
-				emerg_active = 0U;
-			}
-			/* Failsafe: mat T qua LINK_LOST_MS -> tu ha cham, KHONG cat motor giua troi. */
-			const uint8_t link_lost =
-				(uint32_t)(alt_now_ms - drone_link.last_throttle_ms) > LINK_LOST_MS;
 			climb_cmd = link_lost ? (int16_t)FAILSAFE_CLIMB
 								  : DroneLink_ClimbCommand(&drone_link);
-
-			if (!baro_healthy && altitude_hold.active)
-			{
-				/* Baro hong GIUA TROI: ha canh khan cap, KHONG cat motor. */
-				alt_fault_latched = 1U;
-				++alt_hold_faults;
-				Emergency_Begin(ALT_EXIT_BARO_LATCHED, alt_now_ms);
-			}
-
-			// if (!baro_healthy || alt_fault_latched)
-			if (emerg_active)
-			{
-				// if (altitude_hold.active)
-				// {
-				// 	++alt_hold_faults;
-				// 	alt_exit_reason = alt_fault_latched ? ALT_EXIT_BARO_LATCHED
-				// 										: ALT_EXIT_BARO;
-				// }
-			}
-			else if (!baro_healthy || alt_fault_latched)
-			{
-				AltitudeHold_Reset(&altitude_hold);
-				armed = 0U;
-			}
-			else if (!altitude_hold.active)
-			{
-				/* Tren mat dat. Arm o lan day len dau tien. */
-				if (!armed && !link_lost && climb_cmd > 0)
-					armed = 1U;
-				if (armed && link_lost)
-				{
-					armed = 0U; /* mat link khi o mat dat: tat */
-				}
-				else if (armed && climb_cmd > 0)
-				{
-					/* Bat giu do cao ngay tu mat dat, khong cho 0.3 m. */
-					ground_alt_m = dps310.altitude_rel_m;
-					land_since_ms = 0U;
-					hover_ref_us = AUTO_HOVER_GUESS_US;
-					land_vz_lpf = 0.0f;
-					if (AltitudeHold_Start(&altitude_hold, dps310.altitude_rel_m,
-										   AUTO_HOVER_GUESS_US, dps310.last_update_ms))
-					{
-						altitude_hold.throttle_us = AUTO_IDLE_US; /* slew len tu idle */
-						alt_exit_reason = ALT_EXIT_NONE;
-					}
-				}
-			}
-			else
-			{
-				/* Ha canh: dang keo xuong va sat mat dat 1 s -> disarm, motor 1000.
-				 * Bam LEN lai se tu arm + cat canh, khong can KICH HOAT LAI. */
-				const uint8_t near_ground =
-					(dps310.altitude_rel_m - ground_alt_m) < LAND_BAND_M;
-				// if (climb_cmd < 0 && near_ground)
-				/* vz baro nhieu +-0.1 m/s ngay ca khi nam yen: loc them truoc khi so. */
-				land_vz_lpf += 0.004f * (altitude_hold.vz_mps - land_vz_lpf);
-				const uint8_t still = fabsf(land_vz_lpf) < LAND_STILL_MPS;
-				/* Hoc ga treo khi dang dung yen o do cao (tau ~1 s o 500 Hz). */
-				if (climb_cmd == 0 && fabsf(altitude_hold.vz_mps) < 0.10f)
-					hover_ref_us += 0.002f * (altitude_hold.throttle_us - hover_ref_us);
-				const float thr_drop = hover_ref_us - altitude_hold.throttle_us;
-				/* Chi baro gan dat la chua du (baro troi +-0.3 m): phai dung yen
-				 * VA ga da tut duoi ga treo, tuc la mat dat dang do drone. */
-				const uint8_t landed_like = still &&
-											((near_ground && thr_drop > LAND_THR_DROP_US) ||
-											 thr_drop > LAND_THR_DROP_HARD_US);
-				if (climb_cmd < 0 && landed_like)
-				{
-					if (land_since_ms == 0U)
-						land_since_ms = alt_now_ms | 1U;
-					else if ((uint32_t)(alt_now_ms - land_since_ms) >= LAND_CONFIRM_MS)
-					{
-						AltitudeHold_Reset(&altitude_hold);
-						land_since_ms = 0U;
-						armed = 0U;
-						alt_exit_reason = link_lost ? ALT_EXIT_FAILSAFE_LANDED
-													: ALT_EXIT_LANDED;
-					}
-				}
-				else
-					land_since_ms = 0U;
-			}
-			// throttle = altitude_hold.active ? altitude_hold.throttle_us
-			// 								: (armed ? AUTO_IDLE_US : 1000.0f);
-			if (emerg_active)
-				throttle = Emergency_Throttle(alt_now_ms);
-			else
-				throttle = altitude_hold.active ? altitude_hold.throttle_us
-												: (armed ? AUTO_IDLE_US : 1000.0f);
-		}
 		else
-		{
-			/* T mode 0 (DUNG) hoac mode khong ho tro: cat ALT_HOLD, motor 1000.
-			 * Truoc day nhanh nay thieu -> throttle giu gia tri cu sau khi DUNG. */
-			if (altitude_hold.active)
-				alt_exit_reason = ALT_EXIT_STOPPED;
-			AltitudeHold_Reset(&altitude_hold);
-			armed = 0U;
-			alt_fault_latched = 0U;
-			land_since_ms = 0U;
-			emerg_active = 0U; /* DUNG = kill switch, cat ngay ca khi dang ha khan cap */
 			climb_cmd = 0;
-			throttle = 1000.0f;
-		}
-		auto_was_requested = auto_mode;
+
+		FlightInputs_t fin;
+		fin.now_ms = alt_now_ms;
+		fin.dt_s = dt;
+		fin.auto_mode = auto_mode;
+		fin.link_lost = link_lost;
+		fin.climb_cmd = climb_cmd;
+		fin.baro_healthy = baro_healthy;
+		fin.baro_new = baro_new;
+		fin.baro_alt_m = dps310.altitude_rel_m;
+		fin.baro_sample_ms = dps310.last_update_ms;
+		fin.accel_norm_g = sqrtf(imu.ax_g * imu.ax_g + imu.ay_g * imu.ay_g + imu.az_g * imu.az_g);
+		FlightMode_Step(&flight, &fin);
+		throttle = flight.throttle_us;
+		/* Lenh nghieng/yaw tu LoRa chi tac dong khi da roi dat. */
+		const uint8_t att_cmd_ok = FlightMode_AttitudeCmdEnabled(&flight);
+
 		if (throttle > 1000.0f)
 		{
 			/* Mặc định: góc P -> tốc độ PI. Giữ nguyên dấu IMU và mixer. */
 			AngleController_Update(&angle_ctrl,
-								   (float)DroneLink_RollCommand(&drone_link),
-								   (float)DroneLink_PitchCommand(&drone_link),
+								   att_cmd_ok ? (float)DroneLink_RollCommand(&drone_link) : 0.0f,
+								   att_cmd_ok ? (float)DroneLink_PitchCommand(&drone_link) : 0.0f,
 								   roll_deg, pitch_deg,
 								   dt, &roll_rate_sp, &pitch_rate_sp);
 			/* Yaw setpoint là hướng MMC ở thời điểm BẮT ĐẦU lên ga.
@@ -786,7 +653,7 @@ int main(void)
 			{
 				/* Can trai ngang = toc do yaw; tha can thi yaw PID
 				 * giu huong hien tai. */
-				if (auto_mode)
+				if (att_cmd_ok)
 					yaw_target_deg = Yaw_Wrap360(yaw_target_deg +
 												 (float)DroneLink_YawRateCommand(&drone_link) * dt);
 				yaw_rate_sp = AngleController_UpdateYaw(&angle_ctrl,
@@ -825,26 +692,6 @@ int main(void)
 		Motors_Write();
 		/* Xử lý MMC sau PWM; cập nhật yaw fused cho chu kỳ điều khiển kế. */
 		Mag_Service();
-
-		/* DPS310 32 Hz: only update vertical PID when a NEW sample arrives. */
-		static uint32_t last_baro_tick = 0U;
-		uint32_t baro_now_ms = HAL_GetTick();
-		if ((baro_now_ms - last_baro_tick) >= 10U)
-		{
-			last_baro_tick = baro_now_ms;
-			if (DPS310_ReadIfReady(&dps310) == HAL_OK && altitude_hold.active && dps310.home_valid)
-			{
-				if (!AltitudeHold_Update(&altitude_hold, dps310.altitude_rel_m,
-										 dps310.last_update_ms, climb_cmd))
-				{
-					// alt_exit_reason = ALT_EXIT_UPDATE_FAULT;
-					// AltitudeHold_Reset(&altitude_hold);
-					alt_fault_latched = 1U;
-					++alt_hold_faults;
-					Emergency_Begin(ALT_EXIT_UPDATE_FAULT, baro_now_ms);
-				}
-			}
-		}
 
 		Send_Status();
 
@@ -1268,6 +1115,7 @@ void Error_Handler(void)
 {
 	/* USER CODE BEGIN Error_Handler_Debug */
 	/* User can add his own implementation to report the HAL error return state */
+	MOTORS_FAILSAFE_OUTPUT();
 	__disable_irq();
 	while (1)
 	{
